@@ -1,108 +1,102 @@
 # Claude Usage Monitor
 
-A lightweight Windows system-tray app for thorough, on-the-fly monitoring of your
-Claude Code usage. It reads your local session transcripts — no account, no API
-key required — and shows today's spend on the tray icon, a live tooltip, and a
-full browser dashboard.
+A lightweight Windows system-tray app that tells you, at a glance, **how close you
+are to your Claude plan limits** — so you can gauge how hard you can keep going.
 
-Everything is derived from `~/.claude/projects/**/*.jsonl` (the transcripts Claude
-Code already writes). The only network call is the **optional, opt-in** experimental
-plan-quota reader.
+The tray icon shows your highest current utilization %. Click it for a dashboard
+that leads with your limit gauges (the live `/usage` bars) plus a burn-rate and a
+**time-to-cap estimate** you don't get from `/usage` itself. A second tab has the
+full local cost/token accounting if you ever want the detail.
 
-> **On a Max/Pro subscription, dollar figures are *notional* — equivalent-API cost.**
-> They're an intensity gauge, not a bill. Token counts are exact.
+Everything is derived from your local Claude Code transcripts
+(`~/.claude/projects/**/*.jsonl`). The only network call is the plan-quota reader,
+which is **read-only** unless you explicitly ask it to refresh your token.
 
 ## What it shows
 
-- **Tray icon** — today's notional cost (`$12`), colored green → amber → red by spend.
-- **Tooltip** (hover) — today / rolling-5h / week at a glance.
-- **Menu** — today, current 5-hour block + burn rate, 7-day, all-time; a toggle for
-  live quota; open dashboard; refresh; quit.
-- **Dashboard** (`Open dashboard`, or `http://127.0.0.1:8787/`):
-  - KPI cards: Today · Rolling 5h · Last 7 days · All time (cost, tokens, requests)
-  - Rolling 5-hour window: spent, burn rate ($/h), projected full-5h, cache-hit %,
-    input/output split, active-session status
-  - 48-hour activity sparkline and 30-day daily-cost bars
-  - Breakdown tables by model and by project (cost, share, tokens, requests)
-  - Recent sessions
-  - **Plan quota (experimental)** — real 5-hour / weekly `/usage` bars when enabled
+**Limits tab (the point):**
+- A one-line verdict: your tightest cap and whether to ease up.
+- Gauges for each live limit — 5-hour session, weekly (all models), weekly Opus,
+  weekly Sonnet — each with % used, a bar, and reset countdown.
+- **Time-to-cap:** using the live % plus your local burn rate, e.g. *"On pace to
+  hit the cap in ~40m · resets in 1h 30m"* vs *"on pace to stay under."*
+- A self-tracked burn panel (rolling-5h tokens/cost, burn rate, projection,
+  cache-hit %, 7-day total) that works even when the live bars aren't connected.
 
-Data updates live: a filesystem watch on the transcripts re-parses within a few
-seconds of any Claude Code activity (with a 5-second fallback poll).
+**Details tab:** notional cost KPIs (today / 5h / week / all-time), a 48-hour
+activity sparkline, 30-day cost bars, by-model and by-project tables, and recent
+sessions.
 
-## Install & run
+**Tray icon:** your highest utilization % (green → amber → red). Tooltip shows the
+5h and weekly %, and reset time. Menu: the same limits, cost totals, a Live-quota
+toggle, an *Attempt token refresh* action, refresh, and quit.
 
-Requires Python 3.9+ (built and tested on 3.13).
+> On a Max/Pro subscription the dollar figures are **notional** (equivalent-API
+> cost) — an intensity gauge, not a bill. Token counts and the % gauges are exact.
 
+## Run it
+
+You have three options.
+
+**A) The standalone `.exe` (recommended):**
+```
+dist\ClaudeUsageMonitor.exe
+```
+Self-contained — no Python needed to run it. Build it yourself (below) or use the
+one already in `dist\`.
+
+**B) Auto-launch on login:** a shortcut to the exe in your Startup folder
+(`shell:startup`). One is already installed as *Claude Usage Monitor*; delete it
+from that folder to disable.
+
+**C) From source:**
 ```powershell
 cd "H:\Github Repositories\claude-usage-monitor"
 pip install -r requirements.txt
-pythonw run.pyw        # tray app, no console window
+pythonw run.pyw          # tray, no console
+# or:  python serve.py   # dashboard only, no tray, stdlib only -> http://127.0.0.1:8787/
 ```
 
-- `python tray.py` runs it with a console (handy while tweaking).
-- **Start on login:** put a shortcut to `run.pyw` in
-  `shell:startup` (Win+R → `shell:startup`), or point it at `pythonw.exe run.pyw`.
-
-### Dashboard only (no tray, no dependencies)
-
-Only needs the standard library — good for a headless box or if you don't want the
-tray icon:
+## Build the exe
 
 ```powershell
-python serve.py        # -> http://127.0.0.1:8787/
+cd "H:\Github Repositories\claude-usage-monitor"
+pip install pyinstaller
+python -m PyInstaller --onefile --noconsole --name ClaudeUsageMonitor `
+  --add-data "dashboard.html;." --add-data "pricing.json;." `
+  --hidden-import pystray._win32 --noconfirm tray.py
+# -> dist\ClaudeUsageMonitor.exe
 ```
 
-Env: `CLAUDE_USAGE_PORT` (default 8787), `CLAUDE_USAGE_QUOTA=1` to enable live quota.
+## Live limit gauges (the token bit)
 
-## The experimental "Live quota" toggle
+The gauges come from the same endpoint Claude Code's `/usage` uses:
+`GET https://api.anthropic.com/api/oauth/usage` with your OAuth token from
+`~/.claude/.credentials.json`. Two things to know:
 
-Off by default. When enabled (tray menu → *Live quota (experimental)*), it calls the
-**same endpoint Claude Code's `/usage` command uses** to fetch your real rate-limit
-bars — the 5-hour rolling window and weekly limits, with reset times:
+- **It's read-only by default.** The app never writes your credentials on its own.
+- If your stored token is stale/rejected (a `401`), the gauges show *not
+  connected*. Fix it either way:
+  1. **Run `/login` in a Claude Code terminal** (cleanest, zero risk) — mints a
+     fresh, correctly-scoped token that the app then reads.
+  2. **Tray → *Attempt token refresh*** — the app uses the stored refresh token to
+     mint a new one. This *rotates* the refresh token, which can force a re-login
+     of whatever Claude Code login owns it, so it's opt-in, never automatic.
 
-```
-GET https://api.anthropic.com/api/oauth/usage
-Authorization: Bearer <your ~/.claude/.credentials.json token>
-anthropic-beta: oauth-2025-04-20
-```
-
-This is **undocumented** and may break on a Claude Code update — hence "experimental".
-It degrades gracefully: any failure just shows *unavailable* with a reason, and never
-affects the local accounting.
-
-- If the stored access token is near expiry (or gets a `401`), the app attempts **one
-  token refresh** using the refresh token in `~/.claude/.credentials.json` — the same
-  refresh flow Claude Code uses. On success it writes the refreshed token back
-  (atomic write). If refresh also fails, it asks you to run `/login` in Claude Code.
-- It never prints or transmits your token anywhere except that one Anthropic endpoint.
-
-> **Known gotcha:** if your on-disk `~/.claude/.credentials.json` holds an old or
-> under-scoped subscription token, the usage call returns `401`. Run `/login` in
-> Claude Code once to mint a current token, then re-enable the toggle.
+Until connected, the self-tracked burn panel still gives you a local read on usage.
 
 ## How it works
 
 | File | Role |
 |---|---|
-| `engine.py` | Incrementally parses transcripts → per-message usage records → aggregated snapshots. Dedupes on `message.id`+`requestId` (like `ccusage`), so re-logged streaming messages aren't double-counted. |
-| `pricing.py` / `pricing.json` | Per-model rates and cost math. Edit `pricing.json` to adjust; the app reloads it on restart. |
-| `server.py` | Tiny stdlib HTTP server: `/` (dashboard), `/api/usage`, `/api/quota`, `/health`. Bound to `127.0.0.1` only. |
-| `dashboard.html` | The browser UI. Served from disk each request — edit and refresh, no restart. |
-| `quota.py` | The opt-in `/usage` reader + token refresh. |
-| `tray.py` | The tray icon, menu, tooltip, and background refresh loop. |
-| `serve.py` | Dashboard/API without the tray (stdlib only). |
-
-## Hacking
-
-- **Pricing / new models:** edit `pricing.json` (`_default` covers anything unlisted).
-- **Dashboard:** it's one self-contained `dashboard.html` consuming `/api/usage`. Change
-  it and hit refresh — the server re-reads it every request.
-- **What the tray number shows:** `icon_text()` / `accent_for()` in `tray.py`.
-- **Windows / thresholds:** the 5-hour rolling window and colors are simple constants
-  in `engine.py` and `tray.py`.
+| `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). |
+| `quota.py` | The `/usage` reader + opt-in token refresh. Read-only unless `allow_refresh=True`. |
+| `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
+| `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). |
+| `tray.py` | Tray icon, tooltip, menu, live file-watch refresh. |
+| `serve.py` | Dashboard/API without the tray (stdlib only). `CLAUDE_USAGE_MOCK_QUOTA=1` serves canned gauge data for UI work. |
 
 ## Privacy
 
-100% local except the opt-in quota call. No telemetry, no external services. The
-dashboard binds to loopback only.
+100% local except the opt-in quota call to Anthropic's own API with your own
+token. No telemetry. The dashboard binds to loopback only.

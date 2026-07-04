@@ -11,9 +11,13 @@ reverse-engineered from the installed Claude Code v2.0.65 binary.
 Response: { five_hour, seven_day, seven_day_sonnet, seven_day_opus }, each a
 { "utilization": 0-100, "resets_at": ISO8601|null } (or absent/null).
 
-This is UNDOCUMENTED and may break on a Claude Code update — it's the opt-in
-"experimental" surface. All failures degrade gracefully to {available: false}.
-Never raises to the caller.
+SAFE BY DEFAULT: this only READS your credentials and never writes them unless
+you explicitly pass allow_refresh=True (the tray's "Attempt token refresh"
+action). A token refresh rotates the refresh token, which can force a re-login
+of whatever Claude Code login owns it — so it's opt-in, never automatic.
+
+This is UNDOCUMENTED and may break on a Claude Code update. All failures
+degrade gracefully to {available: false}; it never raises to the caller.
 """
 import json
 import os
@@ -30,12 +34,13 @@ USER_AGENT = "claude-code/2.0.65"
 BETA = "oauth-2025-04-20"
 
 _cache = {"epoch": 0.0, "data": None}
-_CACHE_TTL = 45.0
+_TTL_OK = 45.0       # re-fetch a good result at most this often
+_TTL_FAIL = 300.0    # back off longer after a failure (avoid hammering)
 
 
 def _read_creds():
     with open(CREDENTIALS, encoding="utf-8") as f:
-        return (json.load(f).get("claudeAiOauth") or {})
+        return json.load(f).get("claudeAiOauth") or {}
 
 
 def _write_creds(oauth):
@@ -49,10 +54,7 @@ def _write_creds(oauth):
 
 
 def _refresh(oauth):
-    """Refresh an expiring access token. Returns the updated oauth dict.
-
-    Non-destructive on failure: raises, and the caller keeps the old token.
-    """
+    """Refresh the access token and persist it. Raises on failure (caller keeps old token)."""
     body = json.dumps({
         "grant_type": "refresh_token",
         "refresh_token": oauth.get("refreshToken"),
@@ -71,7 +73,6 @@ def _refresh(oauth):
                      ("expires_at", "expiresAt")):
         if data.get(src) is not None:
             updated[dst] = data[src]
-    # some responses use camelCase already
     for k in ("accessToken", "refreshToken", "expiresAt"):
         if data.get(k) is not None:
             updated[k] = data[k]
@@ -81,20 +82,14 @@ def _refresh(oauth):
 
 def _normalize(raw):
     out = {}
-    for key in ("five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus"):
+    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
         v = raw.get(key)
-        if isinstance(v, dict):
-            out[key] = {
-                "utilization": v.get("utilization"),
-                "resets_at": v.get("resets_at"),
-            }
-        else:
-            out[key] = None
+        out[key] = {"utilization": v.get("utilization"), "resets_at": v.get("resets_at")} \
+            if isinstance(v, dict) else None
     return out
 
 
 def _call(token):
-    """Make the usage GET. Returns (raw_dict, None) on 200, or (None, HTTPError/Exception)."""
     req = urllib.request.Request(USAGE_URL, method="GET", headers={
         "Authorization": "Bearer " + token,
         "anthropic-beta": BETA,
@@ -105,61 +100,73 @@ def _call(token):
         return json.loads(resp.read())
 
 
-def fetch(force=False):
+def fetch(force=False, allow_refresh=False):
+    """Return the current plan-quota snapshot.
+
+    force=True bypasses the cache. allow_refresh=True permits ONE token refresh
+    (which writes credentials) when the token is expired or rejected; default
+    False keeps this strictly read-only.
+    """
     now = time.time()
-    if not force and _cache["data"] and (now - _cache["epoch"]) < _CACHE_TTL:
-        return _cache["data"]
+    cached = _cache["data"]
+    if not force and cached:
+        ttl = _TTL_OK if cached.get("available") else _TTL_FAIL
+        if (now - _cache["epoch"]) < ttl:
+            return cached
 
     oauth = _read_creds()
     token = oauth.get("accessToken")
-    warn = None
     if not token:
-        result = {"available": False,
-                  "reason": "not signed in — run /login in Claude Code"}
-        _cache.update(epoch=now, data=result)
-        return result
+        return _store(now, {"available": False,
+                            "reason": "not signed in — run /login in Claude Code"})
 
-    # proactive refresh if within 5 min of the recorded expiry
+    warn = None
     expires = oauth.get("expiresAt")
-    if expires and (now * 1000 + 300_000) >= expires and oauth.get("refreshToken"):
-        try:
-            oauth = _refresh(oauth)
-            token = oauth.get("accessToken")
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            warn = "token near expiry; refresh failed ({})".format(exc)
+    expired = bool(expires and (now * 1000 + 300_000) >= expires)
+    if expired:
+        if allow_refresh and oauth.get("refreshToken"):
+            try:
+                oauth = _refresh(oauth)
+                token = oauth.get("accessToken")
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                return _store(now, {"available": False,
+                                    "reason": "token expired; refresh failed ({})".format(exc)})
+        else:
+            warn = "token near/past expiry — enable token refresh or run /login"
 
-    result = None
-    for attempt in (1, 2):
+    refreshed_once = False
+    for _ in (1, 2):
         try:
             raw = _call(token)
             result = {"available": True, "fetched_epoch": now,
                       "limits": _normalize(raw), "raw": raw}
             if warn:
                 result["warning"] = warn
-            break
+            return _store(now, result)
         except urllib.error.HTTPError as exc:
-            if exc.code == 401 and attempt == 1 and oauth.get("refreshToken"):
-                # token rejected — try one refresh-and-retry
+            if exc.code == 401 and allow_refresh and not refreshed_once and oauth.get("refreshToken"):
+                refreshed_once = True
                 try:
                     oauth = _refresh(oauth)
                     token = oauth.get("accessToken")
                     continue
-                except (urllib.error.URLError, OSError, ValueError) as rexc:
-                    result = {"available": False,
-                              "reason": "token rejected (401) and refresh failed — "
-                                        "run /login in Claude Code ({})".format(rexc)}
-                    break
-            reason = "token rejected (401) — run /login in Claude Code" if exc.code == 401 \
+                except (urllib.error.URLError, OSError, ValueError) as exc2:
+                    return _store(now, {"available": False,
+                                        "reason": "token rejected (401); refresh failed ({})".format(exc2)})
+            reason = ("token rejected (401) — run /login in a terminal, or use "
+                      "“Attempt token refresh”") if exc.code == 401 \
                 else "HTTP {} from usage endpoint".format(exc.code)
-            result = {"available": False, "reason": reason}
-            break
+            return _store(now, {"available": False, "reason": reason})
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            result = {"available": False, "reason": str(exc)}
-            break
+            return _store(now, {"available": False, "reason": str(exc)})
 
+
+def _store(now, result):
     _cache.update(epoch=now, data=result)
     return result
 
 
 if __name__ == "__main__":
-    print(json.dumps(fetch(force=True), indent=2))
+    import sys
+    allow = "--refresh" in sys.argv
+    print(json.dumps(fetch(force=True, allow_refresh=allow), indent=2))

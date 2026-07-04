@@ -11,9 +11,11 @@ can edit it and refresh the browser without restarting the tray app.
 """
 import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# When frozen by PyInstaller, dashboard.html is unpacked under sys._MEIPASS.
+_HERE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
 
 
 def make_server(state, host="127.0.0.1", port=8787):

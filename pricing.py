@@ -5,9 +5,11 @@ Max/Pro subscription (equivalent-API dollars) — an intensity gauge, not a bill
 """
 import json
 import os
+import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_PATH = os.path.join(_HERE, "pricing.json")
+# When frozen by PyInstaller, bundled data files live under sys._MEIPASS.
+_BASE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+_PATH = os.path.join(_BASE, "pricing.json")
 
 with open(_PATH, encoding="utf-8") as _f:
     RATES = json.load(_f)

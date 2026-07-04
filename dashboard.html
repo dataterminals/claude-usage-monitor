@@ -12,53 +12,59 @@
     --opus:#5aa2ff; --sonnet:#43c98b; --fable:#b98bff; --haiku:#f2b34b; --other:#8b93a5;
   }
   * { box-sizing:border-box; }
-  body {
-    margin:0; background:var(--bg); color:var(--ink);
-    font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased;
-  }
-  a { color:var(--accent); }
-  .wrap { max-width:1100px; margin:0 auto; padding:22px 20px 60px; }
-  header { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:4px; }
-  h1 { font-size:20px; margin:0; letter-spacing:.2px; font-weight:650; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1040px; margin:0 auto; padding:22px 20px 60px; }
+  header { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:20px; margin:0; font-weight:650; }
   .sub { color:var(--dim); font-size:12.5px; }
   .status { margin-left:auto; display:flex; align-items:center; gap:8px; color:var(--dim); font-size:12px; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); }
-  .dot.live { background:var(--good); box-shadow:0 0 0 0 rgba(67,201,139,.6); }
-  @media (prefers-reduced-motion: no-preference) {
+  .dot.live { background:var(--good); }
+  @media (prefers-reduced-motion: no-preference){
     .dot.live { animation:pulse 2s infinite; }
     @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(67,201,139,.5)} 70%{box-shadow:0 0 0 7px rgba(67,201,139,0)} 100%{box-shadow:0 0 0 0 rgba(67,201,139,0)} }
   }
-  .note { color:var(--faint); font-size:11.5px; margin:2px 0 18px; }
 
+  .tabs { display:flex; gap:6px; margin:16px 0 4px; }
+  .tab { background:none; border:1px solid var(--line); color:var(--dim); padding:7px 16px; border-radius:9px;
+    font:inherit; font-size:13px; cursor:pointer; }
+  .tab.on { background:var(--panel2); color:var(--ink); border-color:#38405270; }
+  .note { color:var(--faint); font-size:11.5px; margin:4px 0 16px; }
+
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 17px; }
+  section { margin-top:14px; }
+  h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:.7px; color:var(--dim); margin:0 0 12px; font-weight:600; }
   .grid { display:grid; gap:14px; }
   .kpis { grid-template-columns:repeat(4,1fr); }
-  @media (max-width:820px){ .kpis{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:820px){ .kpis{ grid-template-columns:repeat(2,1fr);} .gauges{ grid-template-columns:1fr;} }
   @media (max-width:520px){ .kpis{ grid-template-columns:1fr;} }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:15px 16px; }
-  .kpi .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
-  .kpi .big { font-size:27px; font-weight:680; margin:6px 0 2px; letter-spacing:.3px; }
-  .kpi .meta { color:var(--faint); font-size:12px; }
-  .kpi.hot .big { color:var(--warn); }
 
-  .two { grid-template-columns:1.15fr 1fr; margin-top:14px; }
-  @media (max-width:820px){ .two{ grid-template-columns:1fr;} }
-  h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:.7px; color:var(--dim); margin:0 0 12px; font-weight:600; }
+  /* Limits */
+  .hero { font-size:16px; line-height:1.5; }
+  .hero b { font-weight:680; }
+  .verdict-ok b{ color:var(--good);} .verdict-warn b{ color:var(--warn);} .verdict-bad b{ color:var(--bad);}
+  .gauges { grid-template-columns:1fr 1fr; margin-top:14px; }
+  .gauge .top { display:flex; justify-content:space-between; align-items:baseline; }
+  .gauge .name { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .gauge .pct { font-size:30px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .gauge .reset { color:var(--faint); font-size:12px; }
+  .bar { height:12px; border-radius:8px; background:var(--panel2); overflow:hidden; margin:10px 0 8px; }
+  .bar > span { display:block; height:100%; border-radius:8px; transition:width .4s ease; }
+  .gauge .pace { font-size:12.5px; }
+  .banner { background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:13px 15px; font-size:13px; color:var(--dim); }
+  .banner b { color:var(--ink); }
+  .banner code { background:#0c0e12; padding:1px 6px; border-radius:5px; color:var(--accent); }
 
   .rows { display:flex; flex-direction:column; gap:9px; }
   .row { display:flex; justify-content:space-between; align-items:baseline; }
-  .row .k { color:var(--dim); }
-  .row .v { font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); } .row .v { font-variant-numeric:tabular-nums; }
   .mono { font-variant-numeric:tabular-nums; }
-  .big2 { font-size:22px; font-weight:650; }
 
-  .bar { height:8px; border-radius:6px; background:var(--panel2); overflow:hidden; margin-top:6px; }
-  .bar > span { display:block; height:100%; border-radius:6px; }
-
-  section { margin-top:14px; }
-  svg { display:block; width:100%; }
-  .axis { fill:var(--faint); font-size:10px; }
-
+  .kpi .lbl { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
+  .kpi .big { font-size:26px; font-weight:680; margin:6px 0 2px; }
+  .kpi .meta { color:var(--faint); font-size:12px; }
+  svg { display:block; width:100%; } .axis { fill:var(--faint); font-size:10px; }
   table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
   th,td { text-align:right; padding:7px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   th { color:var(--dim); font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:.5px; }
@@ -66,10 +72,9 @@
   tbody tr:hover { background:var(--panel2); }
   .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:7px; vertical-align:middle; }
   .pill { font-size:11px; color:var(--dim); }
-  .quota-off { color:var(--faint); font-size:12.5px; }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:820px){ .cols{ grid-template-columns:1fr; } }
-  .err { color:var(--bad); font-size:12px; }
+  .hidden { display:none; }
 </style>
 </head>
 <body>
@@ -77,213 +82,193 @@
   <header>
     <h1>Claude&nbsp;Usage</h1>
     <span class="sub" id="models"></span>
-    <span class="status"><span class="dot" id="dot"></span><span id="status">connecting…</span></span>
+    <span class="status"><span class="dot" id="dot"></span><span id="clock">connecting…</span></span>
   </header>
-  <div class="note" id="note">Notional equivalent-API cost from local transcripts — an intensity gauge, not a bill.</div>
 
-  <div class="grid kpis" id="kpis"></div>
-
-  <div class="grid two">
-    <div class="card">
-      <h2>Rolling 5-hour window <span class="pill">(approx · sliding)</span></h2>
-      <div class="rows" id="block"></div>
-    </div>
-    <div class="card">
-      <h2>Plan quota <span class="pill">(experimental · live)</span></h2>
-      <div id="quota"><div class="quota-off">Toggle “Live quota (experimental)” in the tray menu to enable.</div></div>
-    </div>
+  <div class="tabs">
+    <button class="tab on" data-tab="limits">Limits</button>
+    <button class="tab" data-tab="details">Details</button>
   </div>
 
-  <section class="card">
-    <h2>Activity — last 48 hours</h2>
-    <div id="spark"></div>
-  </section>
+  <!-- LIMITS TAB -->
+  <div id="tab-limits">
+    <div class="note">How close you are to your plan caps — the live <code>/usage</code> bars, plus burn rate and a time-to-cap estimate from your local activity.</div>
+    <section class="card"><div class="hero" id="hero">Loading…</div></section>
+    <div id="gaugeHost"></div>
+    <section class="card">
+      <h2>Local burn — self-tracked</h2>
+      <div class="rows" id="localBurn"></div>
+    </section>
+  </div>
 
-  <section class="card">
-    <h2>Daily cost — last 30 days</h2>
-    <div id="days"></div>
-  </section>
-
-  <section class="grid cols">
-    <div class="card"><h2>By model</h2><div id="byModel"></div></div>
-    <div class="card"><h2>By project</h2><div id="byProject"></div></div>
-  </section>
-
-  <section class="card">
-    <h2>Recent sessions</h2>
-    <div id="sessions"></div>
-  </section>
+  <!-- DETAILS TAB -->
+  <div id="tab-details" class="hidden">
+    <div class="note">Notional equivalent-API cost from local transcripts — an intensity gauge, not a bill.</div>
+    <div class="grid kpis" id="kpis"></div>
+    <section class="card"><h2>Activity — last 48 hours</h2><div id="spark"></div></section>
+    <section class="card"><h2>Daily cost — last 30 days</h2><div id="days"></div></section>
+    <section class="grid cols">
+      <div class="card"><h2>By model</h2><div id="byModel"></div></div>
+      <div class="card"><h2>By project</h2><div id="byProject"></div></div>
+    </section>
+    <section class="card"><h2>Recent sessions</h2><div id="sessions"></div></section>
+  </div>
 </div>
 
 <script>
 const F = {
-  money(x){ if(x==null) return "–"; if(x>=100) return "$"+x.toFixed(0);
-    if(x>=10) return "$"+x.toFixed(1); return "$"+x.toFixed(2); },
-  tok(n){ if(n==null) return "–"; n=Math.round(n);
-    if(n>=1e6) return (n/1e6).toFixed(2)+"M";
-    if(n>=1e3) return (n/1e3).toFixed(1)+"K"; return ""+n; },
+  money(x){ if(x==null) return "–"; if(x>=100) return "$"+x.toFixed(0); if(x>=10) return "$"+x.toFixed(1); return "$"+x.toFixed(2); },
+  tok(n){ if(n==null) return "–"; n=Math.round(n); if(n>=1e6) return (n/1e6).toFixed(2)+"M"; if(n>=1e3) return (n/1e3).toFixed(1)+"K"; return ""+n; },
   int(n){ return (n==null?0:n).toLocaleString(); },
-  pct(x){ return x==null? "–" : Math.floor(x)+"%"; },
-  ago(sec){ if(sec==null) return ""; sec=Math.max(0,sec|0);
-    if(sec<60) return sec+"s ago"; if(sec<3600) return (sec/60|0)+"m ago";
-    if(sec<86400) return (sec/3600|0)+"h ago"; return (sec/86400|0)+"d ago"; },
-  when(iso){ const d=new Date(iso*1000); return d.toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); },
-  resets(iso){ if(!iso) return ""; const d=new Date(iso);
-    return "resets "+d.toLocaleString([], {weekday:"short",hour:"2-digit",minute:"2-digit"}); }
+  dur(h){ if(h==null||!isFinite(h)) return "—"; if(h<0) h=0;
+    const d=Math.floor(h/24), hr=Math.floor(h%24), m=Math.round((h*60)%60);
+    if(d>0) return `${d}d ${hr}h`; if(hr>0) return `${hr}h ${m}m`; return `${m}m`; },
+  when(iso){ return new Date(iso*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
 };
-function modelColor(m){
-  if(m.includes("opus")) return "var(--opus)";
-  if(m.includes("sonnet")) return "var(--sonnet)";
-  if(m.includes("fable")||m.includes("mythos")) return "var(--fable)";
-  if(m.includes("haiku")) return "var(--haiku)";
-  return "var(--other)";
-}
-function shortModel(m){ return m.replace("claude-","").replace(/-/g," "); }
 const el = id => document.getElementById(id);
+function color(u){ return u>=90?"var(--bad)":u>=70?"var(--warn)":"var(--good)"; }
+function modelColor(m){ if(m.includes("opus")) return "var(--opus)"; if(m.includes("sonnet")) return "var(--sonnet)";
+  if(m.includes("fable")||m.includes("mythos")) return "var(--fable)"; if(m.includes("haiku")) return "var(--haiku)"; return "var(--other)"; }
+function shortModel(m){ return m.replace("claude-","").replace(/-/g," "); }
 
-function kpiCard(w, hot){
-  return `<div class="card kpi ${hot?'hot':''}">
-    <div class="lbl">${w.label}</div>
-    <div class="big">${F.money(w.cost)}</div>
-    <div class="meta">${F.tok(w.tokens_total)} tok · ${F.int(w.count)} reqs</div>
+// tabs
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  el("tab-limits").classList.toggle("hidden", b.dataset.tab!=="limits");
+  el("tab-details").classList.toggle("hidden", b.dataset.tab!=="details");
+});
+
+// ---- Limits ----
+const WINDOW_H = { five_hour:5, seven_day:168, seven_day_opus:168, seven_day_sonnet:168 };
+const LIMIT_LABEL = { five_hour:"5-hour session", seven_day:"This week · all models",
+                      seven_day_opus:"This week · Opus", seven_day_sonnet:"This week · Sonnet" };
+
+function pace(util, resetsAtIso, windowH){
+  // estimate hours-until-cap assuming the current fill pace continues
+  if(util==null) return null;
+  const now = Date.now();
+  let hoursToReset = null, hoursTo100 = Infinity;
+  if(resetsAtIso){
+    const reset = Date.parse(resetsAtIso);
+    hoursToReset = (reset - now)/3.6e6;
+    const start = reset - windowH*3.6e6;
+    const elapsedH = Math.max((now - start)/3.6e6, 1/60);
+    const perH = util/elapsedH;
+    hoursTo100 = perH>0 ? (100-util)/perH : Infinity;
+  }
+  return { hoursToReset, hoursTo100 };
+}
+
+function gaugeCard(key, lim){
+  const u = Math.max(0, Math.min(100, lim.utilization));
+  const p = pace(lim.utilization, lim.resets_at, WINDOW_H[key]);
+  let paceLine = "";
+  if(p){
+    if(lim.utilization>=100) paceLine = `<span style="color:var(--bad)">At the cap — resets in ${F.dur(p.hoursToReset)}</span>`;
+    else if(isFinite(p.hoursTo100) && p.hoursToReset!=null && p.hoursTo100 < p.hoursToReset)
+      paceLine = `<span style="color:var(--warn)">On pace to hit the cap in ~${F.dur(p.hoursTo100)}</span> · resets ${F.dur(p.hoursToReset)}`;
+    else if(p.hoursToReset!=null)
+      paceLine = `<span style="color:var(--good)">Resets in ${F.dur(p.hoursToReset)} — on pace to stay under</span>`;
+  }
+  return `<div class="card gauge">
+    <div class="top"><span class="name">${LIMIT_LABEL[key]}</span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
+    <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span></div>
+    <div class="pace">${paceLine}</div>
   </div>`;
 }
 
-function renderKPIs(d){
-  const w=d.windows;
-  el("kpis").innerHTML =
-    kpiCard(w.today) + kpiCard(w.rolling_5h, w.rolling_5h.projected_cost>0)
-    + kpiCard(w.week_7d) + kpiCard(w.all);
-}
+function renderLimits(usage, quota){
+  const host = el("gaugeHost");
+  const b = usage.windows.rolling_5h;
 
-function renderBlock(d){
-  const b=d.windows.rolling_5h, a=d.active;
-  const cacheReadPct = (()=>{ const tot=b.input+b.cache_read+b.cache_write_5m+b.cache_write_1h;
-    return tot? Math.round(100*b.cache_read/tot):0; })();
-  const status = a.active ? `<span style="color:var(--good)">● active</span>`
-    : (a.idle_seconds!=null ? `idle · last ${F.ago(a.idle_seconds)}` : "no activity");
-  el("block").innerHTML = `
-    <div class="row"><span class="k">Spent this window</span><span class="v big2">${F.money(b.cost)}</span></div>
-    <div class="row"><span class="k">Burn rate</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h</span></div>
+  if(!quota || !quota.enabled){
+    el("hero").innerHTML = `Live limit gauges are <b>off</b>. Enable “Live quota” in the tray menu.`;
+    host.innerHTML = "";
+  } else if(!quota.available){
+    el("hero").innerHTML = `Live limit gauges <b>not connected</b>.`;
+    host.innerHTML = `<section class="banner">${quota.reason || "unavailable"}.<br>
+      Fix by running <code>/login</code> in a Claude Code terminal, or use the tray’s
+      <b>Attempt token refresh</b>. Until then, the self-tracked burn below still works.</section>`;
+  } else {
+    const L = quota.limits || {};
+    // hero = the tightest limit
+    let worst=null, worstKey=null;
+    for(const k of Object.keys(WINDOW_H)){ const v=L[k];
+      if(v && v.utilization!=null && (worst==null || v.utilization>worst.utilization)){ worst=v; worstKey=k; } }
+    if(worst){
+      const p = pace(worst.utilization, worst.resets_at, WINDOW_H[worstKey]);
+      let cls="verdict-ok", verb=`You have headroom.`;
+      if(worst.utilization>=90){ cls="verdict-bad"; verb=`Ease up — you're nearly capped.`; }
+      else if(p && isFinite(p.hoursTo100) && p.hoursToReset!=null && p.hoursTo100<p.hoursToReset){ cls="verdict-warn"; verb=`At this pace you'll hit it before it resets.`; }
+      el("hero").className = "hero "+cls;
+      el("hero").innerHTML = `Tightest cap: <b>${LIMIT_LABEL[worstKey]}</b> at <b>${Math.floor(worst.utilization)}%</b>. ${verb}`;
+    } else {
+      el("hero").className="hero"; el("hero").innerHTML = `Connected — no limit data returned yet.`;
+    }
+    let cards="";
+    for(const k of Object.keys(WINDOW_H)){ const v=L[k]; if(v && v.utilization!=null) cards+=gaugeCard(k,v); }
+    host.innerHTML = `<div class="grid gauges">${cards}</div>`;
+    if(quota.warning) host.innerHTML += `<div class="pill" style="color:var(--warn);margin-top:8px">${quota.warning}</div>`;
+  }
+
+  const cachePct = (()=>{ const t=b.input+b.cache_read+b.cache_write_5m+b.cache_write_1h; return t?Math.round(100*b.cache_read/t):0; })();
+  el("localBurn").innerHTML = `
+    <div class="row"><span class="k">Rolling 5h — tokens</span><span class="v mono">${F.tok(b.tokens_total)}</span></div>
+    <div class="row"><span class="k">Rolling 5h — notional cost</span><span class="v mono">${F.money(b.cost)}</span></div>
+    <div class="row"><span class="k">Burn rate</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(b.tokens_total/Math.max(b.elapsed_hours,0.05))}/h</span></div>
     <div class="row"><span class="k">Projected full 5h</span><span class="v mono">${F.money(b.projected_cost)}</span></div>
-    <div class="row"><span class="k">Elapsed</span><span class="v mono">${(b.elapsed_hours||0).toFixed(1)}h / 5h</span></div>
-    <div class="row"><span class="k">Requests</span><span class="v mono">${F.int(b.count)}</span></div>
-    <div class="row"><span class="k">Cache hit</span><span class="v mono">${cacheReadPct}% · ${F.tok(b.cache_read)} read</span></div>
-    <div class="row"><span class="k">Input / output</span><span class="v mono">${F.tok(b.input)} / ${F.tok(b.output)}</span></div>
-    <div class="row"><span class="k">Session</span><span class="v mono">${status}</span></div>`;
+    <div class="row"><span class="k">Cache hit</span><span class="v mono">${cachePct}%</span></div>
+    <div class="row"><span class="k">Last 7 days</span><span class="v mono">${F.money(usage.windows.week_7d.cost)} · ${F.tok(usage.windows.week_7d.tokens_total)}</span></div>`;
 }
 
-function bars(v, color){ // horizontal share bar
-  return `<div class="bar"><span style="width:${Math.max(2,v)}%;background:${color}"></span></div>`;
+// ---- Details (unchanged accounting) ----
+function kpi(w,hot){ return `<div class="card kpi"><div class="lbl">${w.label}</div>
+  <div class="big" ${hot?'style="color:var(--warn)"':''}>${F.money(w.cost)}</div>
+  <div class="meta">${F.tok(w.tokens_total)} tok · ${F.int(w.count)} reqs</div></div>`; }
+function renderDetails(d){
+  const w=d.windows;
+  el("kpis").innerHTML = kpi(w.today)+kpi(w.rolling_5h,w.rolling_5h.projected_cost>50)+kpi(w.week_7d)+kpi(w.all);
+  renderSpark(d); renderDays(d);
+  el("byModel").innerHTML = table(d.by_model,"model");
+  el("byProject").innerHTML = table(d.by_project,"project");
+  renderSessions(d);
 }
-
-function renderQuota(q){
-  const host=el("quota");
-  if(!q || !q.enabled){ host.innerHTML=`<div class="quota-off">Toggle “Live quota (experimental)” in the tray menu to enable.</div>`; return; }
-  if(!q.available){ host.innerHTML=`<div class="err">Unavailable: ${q.reason||"unknown"}</div>`; return; }
-  const L=q.limits||{};
-  const rows=[["five_hour","Current 5h session"],["seven_day","This week (all models)"],
-              ["seven_day_opus","Weekly · Opus"],["seven_day_sonnet","Weekly · Sonnet"]];
-  let html="";
-  for(const [key,label] of rows){
-    const v=L[key]; if(!v || v.utilization==null) continue;
-    const u=Math.min(100,Math.max(0,v.utilization));
-    const col = u>=90?"var(--bad)":u>=70?"var(--warn)":"var(--good)";
-    html += `<div style="margin-bottom:11px">
-      <div class="row"><span class="k">${label}</span><span class="v mono">${F.pct(v.utilization)} <span class="pill">${F.resets(v.resets_at)}</span></span></div>
-      ${bars(u,col)}</div>`;
-  }
-  host.innerHTML = html || `<div class="quota-off">No limit data returned.</div>`;
-  if(q.warning){ host.innerHTML += `<div class="pill" style="color:var(--warn)">${q.warning}</div>`; }
-}
-
-function renderSpark(d){
-  const s=d.hourly_48h; if(!s.length){ el("spark").innerHTML=""; return; }
-  const W=1040,H=120, pad=18, n=s.length;
-  const max=Math.max(1e-9,...s.map(x=>x.cost));
-  const bw=(W-pad*2)/n;
-  let rects="";
-  for(let i=0;i<n;i++){
-    const h=(s[i].cost/max)*(H-pad*2);
-    const x=pad+i*bw, y=H-pad-h;
-    const now = i>=n-1;
-    rects+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-1.5).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="1.5" fill="${now?'var(--accent)':'#3a6bd6'}" opacity="${now?1:.8}"/>`;
-  }
-  // hour ticks every 6h
-  let ticks="";
-  for(let i=0;i<n;i+=6){
-    const x=pad+i*bw; const t=new Date(s[i].epoch*1000);
-    ticks+=`<text class="axis" x="${x.toFixed(1)}" y="${H-4}">${t.getHours()}:00</text>`;
-  }
-  el("spark").innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    <text class="axis" x="${pad}" y="12">peak ${F.money(max)}/h</text>${rects}${ticks}</svg>`;
-}
-
-function renderDays(d){
-  const s=d.by_day; if(!s.length){ el("days").innerHTML='<div class="quota-off">No data.</div>'; return; }
-  const W=1040,H=150, pad=22, n=s.length;
-  const max=Math.max(1e-9,...s.map(x=>x.cost));
-  const bw=(W-pad*2)/n;
-  let rects="",ticks="";
-  for(let i=0;i<n;i++){
-    const h=(s[i].cost/max)*(H-pad*2);
-    const x=pad+i*bw, y=H-pad-h;
-    rects+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-2).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="2" fill="var(--accent)" opacity="${i===n-1?1:.85}"><title>${s[i].day}: ${F.money(s[i].cost)} · ${F.tok(s[i].tokens_total)} tok</title></rect>`;
-    if(n<=15 || i%3===0){ ticks+=`<text class="axis" x="${(x+bw/2).toFixed(1)}" y="${H-6}" text-anchor="middle">${s[i].day.slice(5)}</text>`; }
-  }
-  el("days").innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    <text class="axis" x="${pad}" y="13">peak ${F.money(max)}/day</text>${rects}${ticks}</svg>`;
-}
-
-function breakdownTable(items, kind){
-  const total=items.reduce((a,x)=>a+x.cost,0)||1;
-  let rows="";
-  for(const it of items.slice(0,12)){
-    const name = kind==="model"? shortModel(it.name) : (it.name||"(unknown)");
-    const col = kind==="model"? modelColor(it.name) : "var(--faint)";
-    const share=100*it.cost/total;
-    rows+=`<tr>
-      <td><span class="swatch" style="background:${col}"></span>${name}</td>
-      <td>${F.money(it.cost)}</td>
-      <td>${share.toFixed(0)}%</td>
-      <td>${F.tok(it.tokens_total)}</td>
-      <td>${F.int(it.count)}</td></tr>`;
-  }
-  return `<table><thead><tr><th>${kind}</th><th>cost</th><th>share</th><th>tokens</th><th>reqs</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderSessions(d){
-  let rows="";
-  for(const s of d.sessions){
-    rows+=`<tr>
-      <td>${s.project||"(unknown)"}</td>
-      <td><span class="swatch" style="background:${modelColor(s.model||"")}"></span>${shortModel(s.model||"")}</td>
-      <td>${F.money(s.cost)}</td>
-      <td>${F.tok(s.tokens_total)}</td>
-      <td>${F.int(s.count)}</td>
-      <td class="pill">${F.when(s.last_epoch)}</td></tr>`;
-  }
-  el("sessions").innerHTML=`<table><thead><tr><th>project</th><th>model</th><th>cost</th><th>tokens</th><th>reqs</th><th>last active</th></tr></thead><tbody>${rows||'<tr><td colspan=6 class="quota-off">No recent sessions.</td></tr>'}</tbody></table>`;
-}
+function renderSpark(d){ const s=d.hourly_48h; if(!s.length){el("spark").innerHTML="";return;}
+  const W=1000,H=110,pad=18,n=s.length,max=Math.max(1e-9,...s.map(x=>x.cost)),bw=(W-pad*2)/n; let r="",t="";
+  for(let i=0;i<n;i++){ const h=(s[i].cost/max)*(H-pad*2),x=pad+i*bw,y=H-pad-h,now=i>=n-1;
+    r+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-1.5).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="1.5" fill="${now?'var(--accent)':'#3a6bd6'}"/>`; }
+  for(let i=0;i<n;i+=6){ const x=pad+i*bw; t+=`<text class="axis" x="${x.toFixed(1)}" y="${H-4}">${new Date(s[i].epoch*1000).getHours()}:00</text>`; }
+  el("spark").innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><text class="axis" x="${pad}" y="12">peak ${F.money(max)}/h</text>${r}${t}</svg>`; }
+function renderDays(d){ const s=d.by_day; if(!s.length){el("days").innerHTML="";return;}
+  const W=1000,H=140,pad=22,n=s.length,max=Math.max(1e-9,...s.map(x=>x.cost)),bw=(W-pad*2)/n; let r="",t="";
+  for(let i=0;i<n;i++){ const h=(s[i].cost/max)*(H-pad*2),x=pad+i*bw,y=H-pad-h;
+    r+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw-2).toFixed(1)}" height="${Math.max(0,h).toFixed(1)}" rx="2" fill="var(--accent)" opacity="${i===n-1?1:.85}"><title>${s[i].day}: ${F.money(s[i].cost)}</title></rect>`;
+    if(n<=15||i%3===0) t+=`<text class="axis" x="${(x+bw/2).toFixed(1)}" y="${H-6}" text-anchor="middle">${s[i].day.slice(5)}</text>`; }
+  el("days").innerHTML=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><text class="axis" x="${pad}" y="13">peak ${F.money(max)}/day</text>${r}${t}</svg>`; }
+function table(items,kind){ const total=items.reduce((a,x)=>a+x.cost,0)||1; let rows="";
+  for(const it of items.slice(0,12)){ const name=kind==="model"?shortModel(it.name):(it.name||"(unknown)");
+    const col=kind==="model"?modelColor(it.name):"var(--faint)";
+    rows+=`<tr><td><span class="swatch" style="background:${col}"></span>${name}</td><td>${F.money(it.cost)}</td><td>${(100*it.cost/total).toFixed(0)}%</td><td>${F.tok(it.tokens_total)}</td><td>${F.int(it.count)}</td></tr>`; }
+  return `<table><thead><tr><th>${kind}</th><th>cost</th><th>share</th><th>tokens</th><th>reqs</th></tr></thead><tbody>${rows}</tbody></table>`; }
+function renderSessions(d){ let rows="";
+  for(const s of d.sessions){ rows+=`<tr><td>${s.project||"(unknown)"}</td><td><span class="swatch" style="background:${modelColor(s.model||"")}"></span>${shortModel(s.model||"")}</td><td>${F.money(s.cost)}</td><td>${F.tok(s.tokens_total)}</td><td>${F.int(s.count)}</td><td class="pill">${F.when(s.last_epoch)}</td></tr>`; }
+  el("sessions").innerHTML=`<table><thead><tr><th>project</th><th>model</th><th>cost</th><th>tokens</th><th>reqs</th><th>last</th></tr></thead><tbody>${rows||'<tr><td colspan=6 class=pill>No recent sessions.</td></tr>'}</tbody></table>`; }
 
 async function tick(){
   try {
-    const d = await (await fetch("/api/usage",{cache:"no-store"})).json();
-    renderKPIs(d); renderBlock(d); renderSpark(d); renderDays(d);
-    el("byModel").innerHTML = breakdownTable(d.by_model,"model");
-    el("byProject").innerHTML = breakdownTable(d.by_project,"project");
-    renderSessions(d);
-    el("models").textContent = `${d.meta.record_count.toLocaleString()} messages · ${d.meta.models.length} models`;
-    el("dot").className = "dot" + (d.active.active ? " live" : "");
-    el("status").textContent = "updated " + new Date().toLocaleTimeString();
-    try { renderQuota(await (await fetch("/api/quota",{cache:"no-store"})).json()); } catch(_){}
-  } catch(e){
-    el("status").textContent = "offline";
-    el("dot").className = "dot";
-  }
+    const [usage, quota] = await Promise.all([
+      fetch("/api/usage",{cache:"no-store"}).then(r=>r.json()),
+      fetch("/api/quota",{cache:"no-store"}).then(r=>r.json()).catch(()=>({enabled:false})),
+    ]);
+    renderLimits(usage, quota);
+    renderDetails(usage);
+    el("models").textContent = `${usage.meta.record_count.toLocaleString()} messages`;
+    el("dot").className = "dot" + (usage.active.active ? " live" : "");
+    el("clock").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch(e){ el("clock").textContent = "offline"; el("dot").className="dot"; }
 }
-tick();
-setInterval(tick, 5000);
+tick(); setInterval(tick, 5000);
 </script>
 </body>
 </html>

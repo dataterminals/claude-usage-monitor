@@ -1,15 +1,18 @@
 """Claude Usage Monitor — system-tray entry point.
 
-Lightweight tray icon that watches ~/.claude/projects transcripts, shows
-today's notional cost on the icon + a live tooltip, and opens a full local
-dashboard in the browser. All data is local; the only network call is the
-opt-in experimental plan-quota reader.
+Tray icon shows how close you are to your plan caps (highest live utilization %),
+with a limits-first menu and a full dashboard in the browser. Local transcript
+accounting lives under the dashboard's "Details" tab.
 
-Run:  pythonw run.pyw   (or)   python tray.py
+Data is local; the only network call is the plan-quota reader, which is
+read-only unless you explicitly use "Attempt token refresh".
+
+Run:  pythonw run.pyw   (or)   python tray.py   (or the built .exe)
 """
 import os
 import threading
 import webbrowser
+from datetime import datetime
 
 import pystray
 from PIL import Image, ImageDraw, ImageFont
@@ -22,8 +25,11 @@ PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 PORT = 8787
 REFRESH_SECONDS = 5
 
+CALM = (90, 162, 255)
+GREEN = (67, 201, 139)
+AMBER = (242, 179, 75)
+RED = (242, 104, 90)
 
-# ---- money / icon helpers -------------------------------------------------
 
 def money(x):
     if x is None:
@@ -35,20 +41,24 @@ def money(x):
     return "${:.2f}".format(x)
 
 
-def icon_text(cost):
-    if cost >= 10:
-        return "${:.0f}".format(cost)
-    if cost >= 1:
-        return "${:.1f}".format(cost)
-    return "¢{:.0f}".format(cost * 100) if cost > 0 else "$0"
+def util_accent(u):
+    if u is None:
+        return CALM
+    if u >= 90:
+        return RED
+    if u >= 70:
+        return AMBER
+    return GREEN
 
 
-def accent_for(cost):
-    if cost >= 20:
-        return (242, 104, 90)     # red
-    if cost >= 5:
-        return (242, 179, 75)     # amber
-    return (90, 162, 255)         # blue
+def reset_str(iso):
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+        return dt.strftime("%a %I:%M%p").replace(" 0", " ").lstrip("0")
+    except (AttributeError, ValueError):
+        return ""
 
 
 def _font(size):
@@ -64,9 +74,8 @@ def make_image(text, accent):
     S = 128
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([5, 5, S - 5, S - 5], radius=26,
-                        fill=(24, 26, 32, 255), outline=accent, width=7)
-    size = 64
+    d.rounded_rectangle([5, 5, S - 5, S - 5], radius=26, fill=(24, 26, 32, 255), outline=accent, width=7)
+    size = 66
     while size > 16:
         f = _font(size)
         l, t, r, b = d.textbbox((0, 0), text, font=f)
@@ -79,13 +88,12 @@ def make_image(text, accent):
     return img
 
 
-# ---- app state ------------------------------------------------------------
-
 class App:
     def __init__(self):
         self.engine = UsageEngine(PROJECTS_DIR)
         self.snap = {}
-        self.quota_enabled = False
+        self.quota = {}
+        self.quota_enabled = True
         self.url = ""
         self.icon = None
         self._stop = threading.Event()
@@ -98,35 +106,64 @@ class App:
         data["enabled"] = True
         return data
 
-    # dynamic menu label helpers
+    # ---- limit helpers ----
+    def _limits(self):
+        q = self.quota
+        return (q.get("limits") or {}) if (q and q.get("available")) else {}
+
+    def _util(self, key):
+        v = self._limits().get(key)
+        return v.get("utilization") if v else None
+
+    def _worst_util(self):
+        vals = [v["utilization"] for v in self._limits().values()
+                if v and v.get("utilization") is not None]
+        return max(vals) if vals else None
+
     def _win(self, key):
         return (self.snap.get("windows") or {}).get(key) or {}
 
-    # pystray calls dynamic-text callables with the menu item as an arg
-    def lbl_today(self, item=None):
-        return "Today:  " + money(self._win("today").get("cost", 0))
-
-    def lbl_block(self, item=None):
-        w = self._win("rolling_5h")
-        return "5h block:  {}  ({}/h)".format(
-            money(w.get("cost", 0)), money(w.get("burn_cost_per_hour", 0)))
+    # ---- dynamic menu labels (pystray passes the item arg) ----
+    def lbl_5h(self, item=None):
+        u = self._util("five_hour")
+        if u is None:
+            return "5-hour limit:  — (not connected)"
+        r = reset_str((self._limits().get("five_hour") or {}).get("resets_at"))
+        return "5-hour limit:  {}%{}".format(int(u), "  · resets " + r if r else "")
 
     def lbl_week(self, item=None):
-        return "7 days:  " + money(self._win("week_7d").get("cost", 0))
+        u = self._util("seven_day")
+        uo = self._util("seven_day_opus")
+        if u is None and uo is None:
+            return "Weekly limit:  —"
+        parts = []
+        if u is not None:
+            parts.append("all {}%".format(int(u)))
+        if uo is not None:
+            parts.append("Opus {}%".format(int(uo)))
+        return "Weekly limit:  " + " · ".join(parts)
+
+    def lbl_today(self, item=None):
+        return "Today (cost):  " + money(self._win("today").get("cost", 0))
 
     def lbl_all(self, item=None):
-        w = self._win("all")
-        return "All time:  {}  ({} msgs)".format(
-            money(w.get("cost", 0)), (self.snap.get("meta") or {}).get("record_count", 0))
+        return "All-time (cost):  " + money(self._win("all").get("cost", 0))
 
-    # actions
+    # ---- actions ----
     def open_dashboard(self, *_):
         webbrowser.open(self.url)
 
     def toggle_quota(self, icon, item):
         self.quota_enabled = not self.quota_enabled
-        if self.quota_enabled:
-            threading.Thread(target=quota.fetch, kwargs={"force": True}, daemon=True).start()
+        self._dirty.set()
+
+    def attempt_refresh(self, *_):
+        def work():
+            self.quota = quota.fetch(force=True, allow_refresh=True)
+            self._update_icon()
+            if self.icon:
+                self.icon.update_menu()
+        threading.Thread(target=work, daemon=True).start()
 
     def force_refresh(self, *_):
         self._dirty.set()
@@ -137,11 +174,15 @@ class App:
         if self.icon:
             self.icon.stop()
 
-    # background refresh loop
+    # ---- background loop ----
     def _updater(self):
         while not self._stop.is_set():
             self.engine.refresh()
             self.snap = self.engine.snapshot()
+            if self.quota_enabled:
+                self.quota = quota.fetch()      # read-only, cached
+            else:
+                self.quota = {}
             self._update_icon()
             if self.icon is not None:
                 try:
@@ -154,12 +195,21 @@ class App:
     def _update_icon(self):
         if self.icon is None:
             return
-        today = self._win("today").get("cost", 0)
-        b = self._win("rolling_5h")
-        wk = self._win("week_7d").get("cost", 0)
-        self.icon.icon = make_image(icon_text(today), accent_for(today))
-        self.icon.title = "Claude Usage  ·  Today {}\n5h {}  ·  Week {}".format(
-            money(today), money(b.get("cost", 0)), money(wk))
+        u = self._worst_util()
+        if u is not None:
+            self.icon.icon = make_image("{}%".format(int(round(u))), util_accent(u))
+            u5, u7 = self._util("five_hour"), self._util("seven_day")
+            r5 = reset_str((self._limits().get("five_hour") or {}).get("resets_at"))
+            line2 = "5h {}%".format(int(u5)) if u5 is not None else "5h —"
+            if u7 is not None:
+                line2 += "  ·  Week {}%".format(int(u7))
+            self.icon.title = "Claude Usage  ·  {}% of tightest cap\n{}{}".format(
+                int(round(u)), line2, "  ·  resets " + r5 if r5 else "")
+        else:
+            today = self._win("today").get("cost", 0)
+            self.icon.icon = make_image(money(today), CALM)
+            reason = (self.quota or {}).get("reason", "live limits off")
+            self.icon.title = "Claude Usage  ·  Today {}\n(limits: {})".format(money(today), reason)
 
 
 def start_watcher(app):
@@ -167,7 +217,7 @@ def start_watcher(app):
         from watchdog.events import FileSystemEventHandler
         from watchdog.observers import Observer
     except ImportError:
-        return None  # periodic refresh still covers updates
+        return None
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
@@ -190,7 +240,7 @@ def main():
     app.snap = app.engine.snapshot()
 
     srv = make_server(app, port=PORT)
-    host, port = srv.server_address
+    _, port = srv.server_address
     app.url = "http://127.0.0.1:{}/".format(port)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -199,19 +249,19 @@ def main():
     menu = pystray.Menu(
         pystray.MenuItem("Open dashboard", app.open_dashboard, default=True),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem(app.lbl_today, None, enabled=False),
-        pystray.MenuItem(app.lbl_block, None, enabled=False),
+        pystray.MenuItem(app.lbl_5h, None, enabled=False),
         pystray.MenuItem(app.lbl_week, None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(app.lbl_today, None, enabled=False),
         pystray.MenuItem(app.lbl_all, None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Live quota (experimental)", app.toggle_quota,
-                         checked=lambda item: app.quota_enabled),
+        pystray.MenuItem("Live quota", app.toggle_quota, checked=lambda item: app.quota_enabled),
+        pystray.MenuItem("Attempt token refresh", app.attempt_refresh),
         pystray.MenuItem("Refresh now", app.force_refresh),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", app.quit),
     )
-    app.icon = pystray.Icon("claude-usage", make_image("$0", accent_for(0)),
-                            "Claude Usage", menu)
+    app.icon = pystray.Icon("claude-usage", make_image("…", CALM), "Claude Usage", menu)
     app._update_icon()
 
     threading.Thread(target=app._updater, daemon=True).start()
