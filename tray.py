@@ -102,18 +102,19 @@ class App:
     def _win(self, key):
         return (self.snap.get("windows") or {}).get(key) or {}
 
-    def lbl_today(self):
+    # pystray calls dynamic-text callables with the menu item as an arg
+    def lbl_today(self, item=None):
         return "Today:  " + money(self._win("today").get("cost", 0))
 
-    def lbl_block(self):
+    def lbl_block(self, item=None):
         w = self._win("rolling_5h")
         return "5h block:  {}  ({}/h)".format(
             money(w.get("cost", 0)), money(w.get("burn_cost_per_hour", 0)))
 
-    def lbl_week(self):
+    def lbl_week(self, item=None):
         return "7 days:  " + money(self._win("week_7d").get("cost", 0))
 
-    def lbl_all(self):
+    def lbl_all(self, item=None):
         w = self._win("all")
         return "All time:  {}  ({} msgs)".format(
             money(w.get("cost", 0)), (self.snap.get("meta") or {}).get("record_count", 0))
