@@ -159,7 +159,7 @@ class App:
 
     def attempt_refresh(self, *_):
         def work():
-            self.quota = quota.fetch(force=True, allow_refresh=True)
+            self.quota = quota.fetch(force=True, allow_refresh=True, force_refresh_token=True)
             self._update_icon()
             if self.icon:
                 self.icon.update_menu()
