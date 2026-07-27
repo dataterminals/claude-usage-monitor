@@ -6,8 +6,8 @@ Serves the static dashboard and two JSON endpoints backed by the engine:
     GET /api/quota   -> experimental plan-quota (only if enabled)
     GET /health      -> {"ok": true}
 
-Bound to 127.0.0.1 only. dashboard.html is read from disk per request, so you
-can edit it and refresh the browser without restarting the tray app.
+Bound to 127.0.0.1 only. dashboard.html is read from disk per request, so the
+native window (or a browser) reflects edits on refresh without a restart.
 """
 import json
 import os
@@ -52,12 +52,17 @@ def make_server(state, host="127.0.0.1", port=8787):
             else:
                 self._send(404, '{"error":"not found"}')
 
+    # A stable origin matters here: the PWA's service worker is scoped to
+    # host:port, so a drifting port would orphan its cache and point the
+    # installed app at a dead origin. Try a short *deterministic* ladder near
+    # the preferred port and stop — never fall back to a random ephemeral port.
     last_err = None
-    for candidate in (port, 0):  # fall back to an ephemeral port if taken
+    for candidate in (port, port + 1, port + 2, port + 3):
         try:
             srv = ThreadingHTTPServer((host, candidate), Handler)
             srv.daemon_threads = True
             return srv
         except OSError as exc:
             last_err = exc
-    raise RuntimeError("could not bind a local port: {}".format(last_err))
+    raise RuntimeError(
+        "could not bind {}:{}-{} (all in use): {}".format(host, port, port + 3, last_err))

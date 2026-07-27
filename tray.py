@@ -10,6 +10,7 @@ read-only unless you explicitly use "Attempt token refresh".
 Run:  pythonw run.pyw   (or)   python tray.py   (or the built .exe)
 """
 import os
+import sys
 import threading
 import webbrowser
 from datetime import datetime
@@ -18,12 +19,17 @@ import pystray
 from PIL import Image, ImageDraw, ImageFont
 
 import quota
+import window as win_mod
 from engine import UsageEngine
 from server import make_server
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 PORT = 8787
 REFRESH_SECONDS = 5
+
+# When frozen by PyInstaller, bundled files unpack under sys._MEIPASS.
+_HERE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+ICON_ICO = os.path.join(_HERE, "icons", "app.ico")
 
 CALM = (90, 162, 255)
 GREEN = (67, 201, 139)
@@ -96,6 +102,7 @@ class App:
         self.quota_enabled = True
         self.url = ""
         self.icon = None
+        self.window = None          # DashboardWindow, when pywebview is present
         self._stop = threading.Event()
         self._dirty = threading.Event()
 
@@ -151,6 +158,14 @@ class App:
 
     # ---- actions ----
     def open_dashboard(self, *_):
+        # Prefer the native window; fall back to the browser if pywebview or
+        # its WebView2 runtime isn't available.
+        if self.window is not None:
+            try:
+                self.window.open()
+                return
+            except Exception:
+                pass
         webbrowser.open(self.url)
 
     def toggle_quota(self, icon, item):
@@ -173,6 +188,9 @@ class App:
         self._dirty.set()
         if self.icon:
             self.icon.stop()
+        # Tear down the pywebview GUI loop (unblocks the main thread) last.
+        if self.window is not None:
+            self.window.shutdown()
 
     # ---- background loop ----
     def _updater(self):
@@ -234,19 +252,8 @@ def start_watcher(app):
         return None
 
 
-def main():
-    app = App()
-    app.engine.refresh()
-    app.snap = app.engine.snapshot()
-
-    srv = make_server(app, port=PORT)
-    _, port = srv.server_address
-    app.url = "http://127.0.0.1:{}/".format(port)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-
-    start_watcher(app)
-
-    menu = pystray.Menu(
+def build_menu(app):
+    return pystray.Menu(
         pystray.MenuItem("Open dashboard", app.open_dashboard, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(app.lbl_5h, None, enabled=False),
@@ -261,11 +268,54 @@ def main():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", app.quit),
     )
-    app.icon = pystray.Icon("claude-usage", make_image("…", CALM), "Claude Usage", menu)
+
+
+def main():
+    app = App()
+    app.engine.refresh()
+    app.snap = app.engine.snapshot()
+
+    srv = make_server(app, port=PORT)
+    _, port = srv.server_address
+    app.url = "http://127.0.0.1:{}/".format(port)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    start_watcher(app)
+
+    app.icon = pystray.Icon("claude-usage", make_image("…", CALM), "Claude Usage", build_menu(app))
     app._update_icon()
 
-    threading.Thread(target=app._updater, daemon=True).start()
-    app.icon.run()
+    icon_path = ICON_ICO if os.path.exists(ICON_ICO) else None
+
+    started = threading.Event()  # guards against double-starting the tray/updater
+
+    def start_tray_and_updater(detached):
+        if started.is_set():
+            return
+        started.set()
+        threading.Thread(target=app._updater, daemon=True).start()
+        if detached:
+            app.icon.run_detached()   # tray on a bg thread; caller owns main thread
+        else:
+            app.icon.run()            # tray owns the (main) thread; blocks
+
+    if win_mod.available:
+        # pywebview owns the main thread. Start the tray icon (detached) and the
+        # background updater once its GUI loop is live, so nothing contends for
+        # the main thread. The window is created hidden — "Open dashboard" shows
+        # it — so nothing pops up unbidden.
+        app.window = win_mod.DashboardWindow(app.url, icon_path)
+        try:
+            app.window.run(on_start=lambda: start_tray_and_updater(detached=True))
+        except Exception:
+            # WebView2 loop couldn't start (e.g. runtime genuinely absent).
+            # Fall back to tray-only; "Open dashboard" then uses the browser.
+            app.window = None
+            start_tray_and_updater(detached=False)
+    else:
+        # No pywebview: original tray-owns-main-thread flow.
+        # "Open dashboard" opens the browser (see App.open_dashboard).
+        start_tray_and_updater(detached=False)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,7 @@
 pystray>=0.19
 Pillow>=10
 watchdog>=3
+# Native dashboard window (uses the Edge WebView2 runtime already on Windows).
+# Optional at runtime: if it's missing, the app falls back to opening the
+# dashboard in the default browser.
+pywebview>=5

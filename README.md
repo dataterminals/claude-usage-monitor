@@ -3,10 +3,12 @@
 A lightweight Windows system-tray app that tells you, at a glance, **how close you
 are to your Claude plan limits** — so you can gauge how hard you can keep going.
 
-The tray icon shows your highest current utilization %. Click it for a dashboard
-that leads with your limit gauges (the live `/usage` bars) plus a burn-rate and a
-**time-to-cap estimate** you don't get from `/usage` itself. A second tab has the
-full local cost/token accounting if you ever want the detail.
+The tray icon shows your highest current utilization %. **Open dashboard** pops a
+small **native window** (its own chromeless app window you can park in a corner of
+a monitor — no browser tab) that leads with your limit gauges (the live `/usage`
+bars) plus a burn-rate and a **time-to-cap estimate** you don't get from `/usage`
+itself. A second tab has the full local cost/token accounting if you ever want the
+detail.
 
 Everything is derived from your local Claude Code transcripts
 (`~/.claude/projects/**/*.jsonl`). The only network call is the plan-quota reader,
@@ -28,8 +30,15 @@ activity sparkline, 30-day cost bars, by-model and by-project tables, and recent
 sessions.
 
 **Tray icon:** your highest utilization % (green → amber → red). Tooltip shows the
-5h and weekly %, and reset time. Menu: the same limits, cost totals, a Live-quota
-toggle, an *Attempt token refresh* action, refresh, and quit.
+5h and weekly %, and reset time. Menu: **Open dashboard** (the native window), the
+same limits, cost totals, a Live-quota toggle, an *Attempt token refresh* action,
+refresh, and quit.
+
+**The window:** a real desktop window (Edge WebView2, already on Windows) — tall
+and narrow by default, dark-themed, resizable so you can size it into a corner. It
+opens only when you ask (nothing pops up at login), and **closing it just hides
+it** — reopening from the tray is instant. Quit from the tray closes it for good.
+If WebView2/pywebview isn't available, *Open dashboard* falls back to your browser.
 
 > On a Max/Pro subscription the dollar figures are **notional** (equivalent-API
 > cost) — an intensity gauge, not a bill. Token counts and the % gauges are exact.
@@ -53,20 +62,27 @@ from that folder to disable.
 ```powershell
 cd "H:\Github Repositories\claude-usage-monitor"
 pip install -r requirements.txt
-pythonw run.pyw          # tray, no console
-# or:  python serve.py   # dashboard only, no tray, stdlib only -> http://127.0.0.1:8787/
+pythonw run.pyw          # tray + native window, no console
+# or:  python serve.py   # dashboard API only, no tray/window, stdlib only -> http://127.0.0.1:8787/
 ```
 
+The native window needs `pywebview` (in `requirements.txt`) and the Edge WebView2
+runtime, which ships with Windows 11 / current Edge. Without it the app still runs
+and *Open dashboard* just uses your default browser.
+
 ## Build the exe
+
+The `.spec` file bundles the dashboard, icons, and the pywebview backends. Use it:
 
 ```powershell
 cd "H:\Github Repositories\claude-usage-monitor"
 pip install pyinstaller
-python -m PyInstaller --onefile --noconsole --name ClaudeUsageMonitor `
-  --add-data "dashboard.html;." --add-data "pricing.json;." `
-  --hidden-import pystray._win32 --noconfirm tray.py
+python -m PyInstaller ClaudeUsageMonitor.spec --noconfirm
 # -> dist\ClaudeUsageMonitor.exe
 ```
+
+If you regenerate the app icon, re-run `python make_icons.py` first (writes
+`icons\app.ico` + `icons\icon-256.png`).
 
 ## Live limit gauges (the token bit)
 
@@ -92,9 +108,11 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). |
 | `quota.py` | The `/usage` reader + opt-in token refresh. Read-only unless `allow_refresh=True`. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
-| `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). |
-| `tray.py` | Tray icon, tooltip, menu, live file-watch refresh. |
-| `serve.py` | Dashboard/API without the tray (stdlib only). `CLAUDE_USAGE_MOCK_QUOTA=1` serves canned gauge data for UI work. |
+| `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. |
+| `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |
+| `tray.py` | Tray icon, tooltip, menu, live file-watch refresh; opens/owns the window. |
+| `serve.py` | Dashboard/API without the tray or window (stdlib only). `CLAUDE_USAGE_MOCK_QUOTA=1` serves canned gauge data for UI work. |
+| `make_icons.py` | Regenerates the app/window icon (`icons\app.ico`) from the tray mark. |
 
 ## Privacy
 
