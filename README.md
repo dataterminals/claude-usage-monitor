@@ -45,24 +45,41 @@ If WebView2/pywebview isn't available, *Open dashboard* falls back to your brows
 
 ## Run it
 
-You have three options.
+**A) The launcher (recommended):** double-click **Claude Usage Monitor** on the
+Desktop or in the Start menu. Both shortcuts run `launcher.pyw`, which wraps
+`tray.main()` with the bits you want when starting from a shortcut: it refuses to
+start a *second* copy (two identical tray icons fighting over the same WebView2
+profile is a bad time), and — since `pythonw` has no console — it surfaces a
+missing dependency or a crash in a message box plus a log under
+`%TEMP%\ClaudeUsageMonitor\launcher-error.log` instead of dying silently.
 
-**A) The standalone `.exe` (recommended):**
+Recreate the shortcuts on another machine with:
+```powershell
+$repo = "D:\Github Repositories\claude-usage-monitor"
+$ws = New-Object -ComObject WScript.Shell
+$sc = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude Usage Monitor.lnk'))
+$sc.TargetPath = (Get-Command pythonw).Source
+$sc.Arguments = '"' + (Join-Path $repo 'launcher.pyw') + '"'
+$sc.WorkingDirectory = $repo
+$sc.IconLocation = (Join-Path $repo 'icons\app.ico') + ',0'
+$sc.Save()
+```
+
+**B) Auto-launch on login:** drop a copy of that shortcut into your Startup
+folder (`shell:startup`). Delete it from that folder to disable.
+
+**C) The standalone `.exe`:**
 ```
 dist\ClaudeUsageMonitor.exe
 ```
-Self-contained — no Python needed to run it. Build it yourself (below) or use the
-one already in `dist\`.
+Self-contained — no Python needed to run it. Build artifacts are gitignored, so a
+fresh checkout has no `dist\`; build it yourself (below).
 
-**B) Auto-launch on login:** a shortcut to the exe in your Startup folder
-(`shell:startup`). One is already installed as *Claude Usage Monitor*; delete it
-from that folder to disable.
-
-**C) From source:**
+**D) From source:**
 ```powershell
-cd "H:\Github Repositories\claude-usage-monitor"
+cd "D:\Github Repositories\claude-usage-monitor"
 pip install -r requirements.txt
-pythonw run.pyw          # tray + native window, no console
+pythonw run.pyw          # tray + native window, no console, no launcher guards
 # or:  python serve.py   # dashboard API only, no tray/window, stdlib only -> http://127.0.0.1:8787/
 ```
 
@@ -75,7 +92,7 @@ and *Open dashboard* just uses your default browser.
 The `.spec` file bundles the dashboard, icons, and the pywebview backends. Use it:
 
 ```powershell
-cd "H:\Github Repositories\claude-usage-monitor"
+cd "D:\Github Repositories\claude-usage-monitor"
 pip install pyinstaller
 python -m PyInstaller ClaudeUsageMonitor.spec --noconfirm
 # -> dist\ClaudeUsageMonitor.exe
@@ -112,6 +129,7 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |
 | `tray.py` | Tray icon, tooltip, menu, live file-watch refresh; opens/owns the window. |
 | `serve.py` | Dashboard/API without the tray or window (stdlib only). `CLAUDE_USAGE_MOCK_QUOTA=1` serves canned gauge data for UI work. |
+| `launcher.pyw` | Double-click entry point: single-instance guard + message-box reporting for missing deps/crashes, then `tray.main()`. |
 | `make_icons.py` | Regenerates the app/window icon (`icons\app.ico`) from the tray mark. |
 
 ## Privacy
