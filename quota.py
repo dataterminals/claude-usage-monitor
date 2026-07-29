@@ -114,7 +114,13 @@ def fetch(force=False, allow_refresh=False, force_refresh_token=False):
     if not force and cached and (now - _cache["epoch"]) < _cache.get("ttl", _TTL_OK):
         return cached
 
-    oauth = _read_creds()
+    try:
+        oauth = _read_creds()
+    except (OSError, ValueError):
+        # No credentials file (or it's unreadable/corrupt) — e.g. a Claude Code
+        # login that stores its token elsewhere. Degrade like any other failure.
+        return _store(now, {"available": False,
+                            "reason": "not signed in — run /login in Claude Code"})
     token = oauth.get("accessToken")
     if not token:
         return _store(now, {"available": False,

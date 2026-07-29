@@ -198,7 +198,12 @@ class App:
             self.engine.refresh()
             self.snap = self.engine.snapshot()
             if self.quota_enabled:
-                self.quota = quota.fetch()      # read-only, cached
+                # Never let a quota hiccup kill the refresh loop — without this
+                # the tray would silently freeze at its startup state.
+                try:
+                    self.quota = quota.fetch()  # read-only, cached
+                except Exception as exc:
+                    self.quota = {"available": False, "reason": str(exc)}
             else:
                 self.quota = {}
             self._update_icon()
