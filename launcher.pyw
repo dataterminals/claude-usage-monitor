@@ -61,11 +61,11 @@ def already_running():
     return False
 
 
-def log_crash(exc_text):
+def write_log(text):
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(LOG_FILE, "w", encoding="utf-8") as f:
-            f.write(exc_text)
+            f.write(text)
         return LOG_FILE
     except OSError:
         return None
@@ -81,18 +81,31 @@ def main():
     try:
         import tray
     except ImportError as exc:
+        # "Install the requirements" is only half the advice, and on its own it
+        # sends you in circles: the requirements can be installed and still be
+        # invisible here, because pip's interpreter and the one behind a
+        # double-click need not agree on sys.path. Anything pip put in the
+        # per-user site-packages dir disappears when the launch resolves
+        # through the WindowsApps python alias, which drops that dir. So bind
+        # the pip command to *this* interpreter rather than whatever `pip` is
+        # on PATH, and log the search path — that's what distinguishes "not
+        # installed" from "installed somewhere this Python can't see".
+        req = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "requirements.txt")
+        path = write_log("import error: {}\ninterpreter: {}\n\nsys.path:\n{}\n".format(
+            exc, sys.executable, "\n".join("  " + p for p in sys.path)))
         alert("Missing a dependency: {}\n\n"
               "Install the requirements, then try again:\n\n"
-              "    pip install -r \"{}\"".format(
-                  exc, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "requirements.txt")),
+              "    \"{}\" -m pip install -r \"{}\"{}".format(
+                  exc, sys.executable, req,
+                  "\n\nInterpreter and import path: " + path if path else ""),
               MB_ICONERROR)
         return 1
 
     try:
         tray.main()
     except Exception:
-        path = log_crash(traceback.format_exc())
+        path = write_log(traceback.format_exc())
         alert("Claude Usage Monitor stopped unexpectedly.\n\n{}{}".format(
             traceback.format_exc(limit=3),
             "\nFull details: " + path if path else ""), MB_ICONERROR)
