@@ -18,6 +18,7 @@ from datetime import datetime
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
+import pacing
 import quota
 import window as win_mod
 from engine import UsageEngine
@@ -67,6 +68,12 @@ def reset_str(iso):
         return ""
 
 
+def reset_str_time(epoch):
+    if not epoch:
+        return "—"
+    return datetime.fromtimestamp(epoch).strftime("%I:%M%p").lstrip("0")
+
+
 def _font(size):
     for path in (r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\arial.ttf"):
         try:
@@ -99,18 +106,25 @@ class App:
         self.engine = UsageEngine(PROJECTS_DIR)
         self.snap = {}
         self.quota = {}
+        self.pace = {}
         self.quota_enabled = True
         self.url = ""
         self.icon = None
         self.window = None          # DashboardWindow, when pywebview is present
+        self.history = pacing.SampleStore()
         self._stop = threading.Event()
         self._dirty = threading.Event()
 
     def quota_snapshot(self):
         if not self.quota_enabled:
             return {"enabled": False}
-        data = quota.fetch()
+        # Shallow-copy: quota.fetch() hands back its cached dict, and the
+        # per-request keys we add here have no business living in that cache.
+        data = dict(quota.fetch())
         data["enabled"] = True
+        if data.get("available"):
+            data["pacing"] = pacing.compute(data.get("limits") or {},
+                                            store=self.history)
         return data
 
     # ---- limit helpers ----
@@ -149,6 +163,24 @@ class App:
         if uo is not None:
             parts.append("Opus {}%".format(int(uo)))
         return "Weekly limit:  " + " · ".join(parts)
+
+    def lbl_pace(self, item=None):
+        return (self.pace or {}).get("headline") or "Pacing:  —"
+
+    def lbl_day(self, item=None):
+        d = (self.pace or {}).get("weekly_day")
+        if not d:
+            return "Today (limit):  —"
+        used = d.get("used_today")
+        if used is None:
+            return "Today (limit):  {:.1f}% allowance · no history yet".format(d["allowance"])
+        line = "Today (limit):  {:.1f}% of {:.1f}%  ·  {:.1f}% left".format(
+            used, d["allowance"], d["remaining_today"])
+        if not d.get("used_today_exact"):
+            # History doesn't reach the 08:00 boundary, so this is a floor, not
+            # the day's true total — say where the count actually starts.
+            line += "  (since {})".format(reset_str_time(d.get("used_since_epoch")))
+        return line
 
     def lbl_today(self, item=None):
         return "Today (cost):  " + money(self._win("today").get("cost", 0))
@@ -204,8 +236,10 @@ class App:
                     self.quota = quota.fetch()  # read-only, cached
                 except Exception as exc:
                     self.quota = {"available": False, "reason": str(exc)}
+                self._sample()
             else:
                 self.quota = {}
+                self.pace = {}
             self._update_icon()
             if self.icon is not None:
                 try:
@@ -214,6 +248,19 @@ class App:
                     pass
             self._dirty.wait(timeout=REFRESH_SECONDS)
             self._dirty.clear()
+
+    def _sample(self):
+        """Record the reading and recompute pacing. The updater is the only
+        writer of the history file, so there's no cross-process contention."""
+        limits = self._limits()
+        if not limits:
+            self.pace = {}
+            return
+        try:
+            self.history.record(limits)
+            self.pace = pacing.compute(limits, store=self.history)
+        except Exception:
+            self.pace = {}   # pacing is advisory; never break the loop over it
 
     def _update_icon(self):
         if self.icon is None:
@@ -226,8 +273,14 @@ class App:
             line2 = "5h {}%".format(int(u5)) if u5 is not None else "5h —"
             if u7 is not None:
                 line2 += "  ·  Week {}%".format(int(u7))
-            self.icon.title = "Claude Usage  ·  {}% of tightest cap\n{}{}".format(
+            title = "Claude Usage  ·  {}% of tightest cap\n{}{}".format(
                 int(round(u)), line2, "  ·  resets " + r5 if r5 else "")
+            head = (self.pace or {}).get("headline")
+            if head:
+                title += "\n" + head
+            # Shell_NotifyIcon's tooltip is a 128-char buffer; anything longer
+            # is dropped wholesale rather than clipped, so clip it ourselves.
+            self.icon.title = title if len(title) <= 127 else title[:126] + "…"
         else:
             today = self._win("today").get("cost", 0)
             self.icon.icon = make_image(money(today), CALM)
@@ -263,6 +316,8 @@ def build_menu(app):
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(app.lbl_5h, None, enabled=False),
         pystray.MenuItem(app.lbl_week, None, enabled=False),
+        pystray.MenuItem(app.lbl_day, None, enabled=False),
+        pystray.MenuItem(app.lbl_pace, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(app.lbl_today, None, enabled=False),
         pystray.MenuItem(app.lbl_all, None, enabled=False),

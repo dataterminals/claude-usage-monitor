@@ -12,6 +12,7 @@ import os
 import threading
 import time
 
+import pacing
 import quota
 from engine import UsageEngine
 from server import make_server
@@ -26,6 +27,11 @@ _MOCK_QUOTA = {
         "seven_day_sonnet": {"utilization": 12, "resets_at": None},
     },
 }
+# Reset offsets chosen so the mock lands *over* pace on the 5-hour window
+# (2h into 5h at 68% — the budget line is at 40%), since previewing the pacing
+# UI is most of what the mock is for.
+_MOCK_RESET_IN = {"five_hour": 3.0 * 3600, "seven_day": 3.2 * 86400,
+                  "seven_day_opus": 3.2 * 86400, "seven_day_sonnet": 3.2 * 86400}
 
 
 class State:
@@ -33,23 +39,37 @@ class State:
         self.engine = UsageEngine(os.path.expanduser("~/.claude/projects"))
         self.quota_enabled = os.environ.get("CLAUDE_USAGE_QUOTA") == "1"
         self.mock = os.environ.get("CLAUDE_USAGE_MOCK_QUOTA") == "1"
+        self.history = pacing.SampleStore()
 
     def quota_snapshot(self):
         if self.mock:
             # canned data (with reset times a few hours out) for UI dev/preview
             import copy
-            import time
             m = copy.deepcopy(_MOCK_QUOTA)
             now = time.time()
-            m["limits"]["five_hour"]["resets_at"] = _iso(now + 1.6 * 3600)
-            for k in ("seven_day", "seven_day_opus", "seven_day_sonnet"):
-                m["limits"][k]["resets_at"] = _iso(now + 3.2 * 24 * 3600)
+            for k, dt in _MOCK_RESET_IN.items():
+                m["limits"][k]["resets_at"] = _iso(now + dt)
+            # No store: the mock has no real history, so the day-level rows
+            # correctly render as "tracking from now" rather than inventing one.
+            m["pacing"] = pacing.compute(m["limits"])
             return m
         if not self.quota_enabled:
             return {"enabled": False}
-        data = quota.fetch()
+        data = dict(quota.fetch())
         data["enabled"] = True
+        if data.get("available"):
+            data["pacing"] = pacing.compute(data.get("limits") or {},
+                                            store=self.history)
         return data
+
+    def sample(self):
+        """Record a reading so "used today" has a baseline. Mirrors the tray's
+        updater — this process is the only writer when running headless."""
+        if self.mock or not self.quota_enabled:
+            return
+        data = quota.fetch()
+        if data.get("available"):
+            self.history.record(data.get("limits") or {})
 
 
 def _iso(epoch):
@@ -70,6 +90,7 @@ def main():
             time.sleep(5)
             try:
                 state.engine.refresh()
+                state.sample()
             except Exception:
                 pass
 

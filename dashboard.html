@@ -50,9 +50,24 @@
   .gauge .name { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
   .gauge .pct { font-size:30px; font-weight:700; font-variant-numeric:tabular-nums; }
   .gauge .reset { color:var(--faint); font-size:12px; }
-  .bar { height:12px; border-radius:8px; background:var(--panel2); overflow:hidden; margin:10px 0 8px; }
+  .bar { position:relative; height:12px; border-radius:8px; background:var(--panel2); margin:10px 0 8px; }
   .bar > span { display:block; height:100%; border-radius:8px; transition:width .4s ease; }
+  /* where an even spend would put you right now */
+  .bar > i { position:absolute; top:-4px; bottom:-4px; width:2px; margin-left:-1px;
+    background:var(--ink); opacity:.5; border-radius:2px; transition:left .4s ease; }
   .gauge .pace { font-size:12.5px; }
+  .gauge .day { margin-top:10px; padding-top:10px; border-top:1px solid var(--line); }
+
+  /* Pacing card — the "how long should I wait" answer */
+  .pacer { display:flex; align-items:center; gap:15px; }
+  .pacer .glyph { width:42px; height:42px; border-radius:12px; flex:none;
+    display:grid; place-items:center; font-size:20px; background:var(--panel2); }
+  .pacer .lead { font-size:25px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.2px; line-height:1.15; }
+  .pacer .why { color:var(--dim); font-size:12.5px; margin-top:3px; }
+  .pacer .why b { color:var(--ink); font-weight:600; }
+  .pace-ok .glyph { background:#43c98b1f; } .pace-ok .lead { color:var(--good); }
+  .pace-wait .glyph { background:#f2b34b1f; } .pace-wait .lead { color:var(--warn); }
+  .pace-stop .glyph { background:#f2685a1f; } .pace-stop .lead { color:var(--bad); }
   .banner { background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:13px 15px; font-size:13px; color:var(--dim); }
   .banner b { color:var(--ink); }
   .banner code { background:#0c0e12; padding:1px 6px; border-radius:5px; color:var(--accent); }
@@ -93,8 +108,9 @@
 
   <!-- LIMITS TAB -->
   <div id="tab-limits">
-    <div class="note">How close you are to your plan caps — the live <code>/usage</code> bars, plus burn rate and a time-to-cap estimate from your local activity.</div>
+    <div class="note">How close you are to your plan caps — the live <code>/usage</code> bars, plus pacing: the tick on each bar is where an even spend would sit right now, and if you're past it you get the wait that puts you back on the line.</div>
     <section class="card"><div class="hero" id="hero">Loading…</div></section>
+    <section class="card hidden" id="pacerCard"><div class="pacer" id="pacer"></div></section>
     <div id="gaugeHost"></div>
     <section class="card">
       <h2>Local burn — self-tracked</h2>
@@ -124,6 +140,19 @@ const F = {
   dur(h){ if(h==null||!isFinite(h)) return "—"; if(h<0) h=0;
     const d=Math.floor(h/24), hr=Math.floor(h%24), m=Math.round((h*60)%60);
     if(d>0) return `${d}d ${hr}h`; if(hr>0) return `${hr}h ${m}m`; return `${m}m`; },
+  // seconds-precision sibling of dur(), used for the live countdowns. Seconds
+  // only show under 10 minutes — long enough to read as live, short enough not
+  // to be a nervous tick for an hour.
+  durS(s){ if(s==null||!isFinite(s)) return "—"; s=Math.max(0,Math.round(s));
+    const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+    if(d>0) return h ? `${d}d ${h}h` : `${d}d`;
+    if(h>0) return m ? `${h}h ${m}m` : `${h}h`;
+    if(s>=600) return `${m}m`; if(m>0) return `${m}m ${s%60}s`; return `${s}s`; },
+  // Weekday-qualified once the target isn't today — a bare "2:50 PM" on a
+  // resume time that's a day and a half out reads as this afternoon.
+  at(e){ const d=new Date(e*1000), t=d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"});
+    return d.toDateString()===new Date().toDateString()
+      ? t : `${d.toLocaleDateString([], {weekday:"short"})} ${t}`; },
   when(iso){ return new Date(iso*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
 };
 const el = id => document.getElementById(id);
@@ -141,41 +170,123 @@ document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
 });
 
 // ---- Limits ----
-const WINDOW_H = { five_hour:5, seven_day:168, seven_day_opus:168, seven_day_sonnet:168 };
+// Pacing (window starts, the catch-up "resume at", day allowances) is computed
+// server-side in pacing.py so the tray and this view can't drift apart; the
+// only thing done here is turning it into words and a live countdown.
+const ORDER = ["five_hour","seven_day","seven_day_opus","seven_day_sonnet"];
 const LIMIT_LABEL = { five_hour:"5-hour session", seven_day:"This week · all models",
                       seven_day_opus:"This week · Opus", seven_day_sonnet:"This week · Sonnet" };
+const FRESH_WINDOW_S = 1800;   // resume this close to a reset -> just take the fresh window
 
-function pace(util, resetsAtIso, windowH){
-  // estimate hours-until-cap assuming the current fill pace continues
-  if(util==null) return null;
-  const now = Date.now();
-  let hoursToReset = null, hoursTo100 = Infinity;
-  if(resetsAtIso){
-    const reset = Date.parse(resetsAtIso);
-    hoursToReset = (reset - now)/3.6e6;
-    const start = reset - windowH*3.6e6;
-    const elapsedH = Math.max((now - start)/3.6e6, 1/60);
-    const perH = util/elapsedH;
-    hoursTo100 = perH>0 ? (100-util)/perH : Infinity;
+// Countdowns repaint every second off a fixed target epoch, so they tick
+// smoothly between the 5s data fetches instead of stepping.
+function paintCountdowns(){
+  const now = Date.now()/1000;
+  document.querySelectorAll("[data-until]").forEach(n => {
+    n.textContent = F.durS(parseFloat(n.dataset.until) - now);
+  });
+}
+const until = (epoch, cls) => `<span${cls?` class="${cls}"`:""} data-until="${epoch}">${F.durS(epoch - Date.now()/1000)}</span>`;
+
+// The two windows answer at different time scales, and collapsing them to one
+// number (the binding max) produces useless advice: overspend the week and it
+// says "wait 1d 4h", which is true but is not a thing anyone does between
+// prompts. So the 5-hour window drives the actionable countdown, and the weekly
+// one speaks in days and allowances — with the other mentioned alongside, never
+// hidden.
+function renderPacer(pace){
+  const card = el("pacerCard"), host = el("pacer");
+  const w = (pace && pace.windows) || {};
+  const keys = Object.keys(w);
+  if(!keys.length){ card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+
+  const five = w.five_hour, week = w.seven_day, day = pace.weekly_day;
+  const weekOver = week && week.wait_seconds > 0;
+  const overToday = day && day.remaining_today != null && day.remaining_today < 0;
+  const weekNote = weekOver
+    ? ` You're also <b>${F.durS(-week.slack_seconds)}</b> ahead of the weekly line.` : "";
+  let cls, glyph, lead, why;
+
+  if(five && five.state === "capped"){
+    cls="pace-stop"; glyph="■"; lead="Session spent";
+    why = `The 5-hour window is at its cap. It resets at <b>${F.at(five.reset_epoch)}</b>
+           (${until(five.reset_epoch)}) and a fresh 5 hours starts from the moment you pick back
+           up — so the wait is the reset, not a pace correction.${weekNote}`;
+
+  } else if(five && five.wait_seconds > 0){
+    const freshIn = five.reset_epoch - five.resume_at_epoch;
+    cls="pace-wait"; glyph="❚❚"; lead=until(five.resume_at_epoch);
+    why = `Wait until <b>${F.at(five.resume_at_epoch)}</b> and the 5-hour budget line catches up to
+           what you've already spent — you're <b>${five.delta.toFixed(1)} points</b> ahead of it.`;
+    if(freshIn < FRESH_WINDOW_S)
+      why += ` Or hold ${F.durS(freshIn)} longer, to ${F.at(five.reset_epoch)}, for a clean window.`;
+    why += weekNote;
+
+  } else if(overToday || weekOver){
+    // Weekly overspend is a day-scale problem: the useful clock is the next
+    // allowance, not a 28-hour "wait" nobody would sit through.
+    cls="pace-wait"; glyph="◷"; lead=until(day.day_end_epoch);
+    why = `Today's allowance is <b>${day.allowance.toFixed(1)}%</b> and you've used
+           <b>${day.used_today == null ? "—" : day.used_today.toFixed(1)+"%"}</b>. The next
+           ${day.allowance.toFixed(1)}% unlocks at <b>${F.at(day.day_end_epoch)}</b>.
+           ${weekOver ? `The weekly line is <b>${F.durS(-week.slack_seconds)}</b> behind you`
+                      : `You're still ahead on the week overall`} — the 5-hour window is fine, so this
+           is a today problem, not a right-now one.`;
+
+  } else {
+    let tight = null;
+    for(const k of keys) if(tight===null || w[k].slack_seconds < tight.slack_seconds) tight = w[k];
+    cls="pace-ok"; glyph="✓"; lead="On pace";
+    why = `<b>${F.durS(tight.slack_seconds)}</b> of budget banked against the <b>${tight.label}</b> line —
+           the tightest of your windows. Nothing to wait out.`;
   }
-  return { hoursToReset, hoursTo100 };
+  host.className = "pacer " + cls;
+  host.innerHTML = `<div class="glyph">${glyph}</div><div><div class="lead">${lead}</div><div class="why">${why}</div></div>`;
 }
 
-function gaugeCard(key, lim){
+function dayStrip(d){
+  if(!d) return "";
+  const used = d.used_today;
+  const usedTxt = used==null
+    ? `<span class="pill">no history yet — tracking from now</span>`
+    : `${used.toFixed(1)}%`;
+  // Only claim "since 08:00" when the history actually reaches the boundary;
+  // otherwise name the moment the count really starts, so a partial figure
+  // never reads as a whole day's total.
+  const since = d.used_today_exact ? d.day_start_epoch : d.used_since_epoch;
+  const sinceLbl = (used==null || since==null)
+    ? "Used today"
+    : `Used since ${F.at(since)}${d.used_today_exact ? "" : " <span class=pill>(partial)</span>"}`;
+  const leftTxt = used==null ? "—" : `${d.remaining_today.toFixed(1)}%`;
+  const leftCol = used==null ? "var(--dim)"
+    : d.remaining_today < 0 ? "var(--bad)" : d.remaining_today < d.allowance*0.25 ? "var(--warn)" : "var(--good)";
+  const banked = d.banked_days;
+  return `<div class="day rows">
+    <div class="row"><span class="k">Day ${d.day_number} of 7 · allowance</span><span class="v mono">${d.allowance.toFixed(1)}%</span></div>
+    <div class="row"><span class="k">${sinceLbl}</span><span class="v mono">${usedTxt}</span></div>
+    <div class="row"><span class="k">Left today</span><span class="v mono" style="color:${leftCol}">${leftTxt}</span></div>
+    <div class="row"><span class="k">${banked>=0?"Banked":"Overspent by"}</span><span class="v mono">${F.durS(Math.abs(banked)*86400)}</span></div>
+  </div>`;
+}
+
+function gaugeCard(key, lim, p, day){
   const u = Math.max(0, Math.min(100, lim.utilization));
-  const p = pace(lim.utilization, lim.resets_at, WINDOW_H[key]);
-  let paceLine = "";
+  let paceLine = "", tick = "";
   if(p){
-    if(lim.utilization>=100) paceLine = `<span style="color:var(--bad)">At the cap — resets in ${F.dur(p.hoursToReset)}</span>`;
-    else if(isFinite(p.hoursTo100) && p.hoursToReset!=null && p.hoursTo100 < p.hoursToReset)
-      paceLine = `<span style="color:var(--warn)">On pace to hit the cap in ~${F.dur(p.hoursTo100)}</span> · resets ${F.dur(p.hoursToReset)}`;
-    else if(p.hoursToReset!=null)
-      paceLine = `<span style="color:var(--good)">Resets in ${F.dur(p.hoursToReset)} — on pace to stay under</span>`;
+    tick = `<i style="left:${Math.max(0,Math.min(100,p.ideal_utilization))}%" title="an even spend would be here now"></i>`;
+    if(p.state === "capped")
+      paceLine = `<span style="color:var(--bad)">At the cap</span> · resets in ${until(p.reset_epoch)}`;
+    else if(p.wait_seconds > 0)
+      paceLine = `<span style="color:var(--warn)">${p.delta.toFixed(1)}pt ahead of pace</span> — resume ${F.at(p.resume_at_epoch)} (${until(p.resume_at_epoch)})`;
+    else
+      paceLine = `<span style="color:var(--good)">${F.durS(p.slack_seconds)} banked</span> · resets in ${until(p.reset_epoch)}`;
   }
   return `<div class="card gauge">
-    <div class="top"><span class="name">${LIMIT_LABEL[key]}</span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
-    <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span></div>
+    <div class="top"><span class="name">${LIMIT_LABEL[key]||key}</span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
+    <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span>${tick}</div>
     <div class="pace">${paceLine}</div>
+    ${dayStrip(day)}
   </div>`;
 }
 
@@ -185,30 +296,38 @@ function renderLimits(usage, quota){
 
   if(!quota || !quota.enabled){
     el("hero").innerHTML = `Live limit gauges are <b>off</b>. Enable “Live quota” in the tray menu.`;
-    host.innerHTML = "";
+    host.innerHTML = ""; el("pacerCard").classList.add("hidden");
   } else if(!quota.available){
     el("hero").innerHTML = `Live limit gauges <b>not connected</b>.`;
     host.innerHTML = `<section class="banner">${quota.reason || "unavailable"}.<br>
       Fix by running <code>/login</code> in a Claude Code terminal, or use the tray’s
       <b>Attempt token refresh</b>. Until then, the self-tracked burn below still works.</section>`;
+    el("pacerCard").classList.add("hidden");
   } else {
     const L = quota.limits || {};
+    const P = quota.pacing || {};
+    const W = P.windows || {};
     // hero = the tightest limit
     let worst=null, worstKey=null;
-    for(const k of Object.keys(WINDOW_H)){ const v=L[k];
+    for(const k of ORDER){ const v=L[k];
       if(v && v.utilization!=null && (worst==null || v.utilization>worst.utilization)){ worst=v; worstKey=k; } }
     if(worst){
-      const p = pace(worst.utilization, worst.resets_at, WINDOW_H[worstKey]);
+      const five = W.five_hour;
       let cls="verdict-ok", verb=`You have headroom.`;
       if(worst.utilization>=90){ cls="verdict-bad"; verb=`Ease up — you're nearly capped.`; }
-      else if(p && isFinite(p.hoursTo100) && p.hoursToReset!=null && p.hoursTo100<p.hoursToReset){ cls="verdict-warn"; verb=`At this pace you'll hit it before it resets.`; }
+      else if(five && five.wait_seconds > 0){ cls="verdict-warn";
+        verb=`Ahead of pace — ${F.durS(five.wait_seconds)} of waiting levels the 5-hour line.`; }
+      else if(P.wait_seconds > 0){ cls="verdict-warn";
+        verb=`The 5-hour window is fine, but you're ${F.durS(P.wait_seconds)} ahead of the weekly line.`; }
       el("hero").className = "hero "+cls;
       el("hero").innerHTML = `Tightest cap: <b>${LIMIT_LABEL[worstKey]}</b> at <b>${Math.floor(worst.utilization)}%</b>. ${verb}`;
     } else {
       el("hero").className="hero"; el("hero").innerHTML = `Connected — no limit data returned yet.`;
     }
+    renderPacer(P);
     let cards="";
-    for(const k of Object.keys(WINDOW_H)){ const v=L[k]; if(v && v.utilization!=null) cards+=gaugeCard(k,v); }
+    for(const k of ORDER){ const v=L[k]; if(v && v.utilization!=null)
+      cards += gaugeCard(k, v, W[k], k==="seven_day" ? P.weekly_day : null); }
     host.innerHTML = `<div class="grid gauges">${cards}</div>`;
     if(quota.warning) host.innerHTML += `<div class="pill" style="color:var(--warn);margin-top:8px">${quota.warning}</div>`;
   }
@@ -270,6 +389,7 @@ async function tick(){
   } catch(e){ el("clock").textContent = "offline"; el("dot").className="dot"; }
 }
 tick(); setInterval(tick, 5000);
+setInterval(paintCountdowns, 1000);
 </script>
 </body>
 </html>
