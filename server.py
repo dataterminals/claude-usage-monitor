@@ -2,9 +2,13 @@
 
 Serves the static dashboard and two JSON endpoints backed by the engine:
     GET /            -> dashboard.html
-    GET /api/usage   -> engine.snapshot()
+    GET /api/usage   -> the updater's latest engine snapshot
     GET /api/quota   -> experimental plan-quota (only if enabled)
     GET /health      -> {"ok": true}
+
+Both API handlers serve what the tray's updater thread last computed rather
+than recomputing (or, worse, making a network call) on the request thread — a
+poll that blocks on an 8s urlopen timeout is a dashboard that hangs.
 
 Bound to 127.0.0.1 only. dashboard.html is read from disk per request, so the
 native window (or a browser) reflects edits on refresh without a restart.
@@ -44,7 +48,7 @@ def make_server(state, host="127.0.0.1", port=8787):
                 except OSError:
                     self._send(500, "dashboard.html not found", "text/plain")
             elif path == "/api/usage":
-                self._send(200, json.dumps(state.engine.snapshot()))
+                self._send(200, json.dumps(state.usage_snapshot()))
             elif path == "/api/quota":
                 self._send(200, json.dumps(state.quota_snapshot()))
             elif path == "/health":

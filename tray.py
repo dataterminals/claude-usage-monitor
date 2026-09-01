@@ -1,17 +1,30 @@
 """Claude Usage Monitor — system-tray entry point.
 
 Tray icon shows how close you are to your plan caps (highest live utilization %),
-with a limits-first menu and a full dashboard in the browser. Local transcript
-accounting lives under the dashboard's "Details" tab.
+with a limits-first menu and a full dashboard in a native window. Local
+transcript accounting lives under the dashboard's "Details" tab.
 
-Data is local; the only network call is the plan-quota reader, which is
-read-only unless you explicitly use "Attempt token refresh".
+Data is local; the only network call is the plan-quota reader.
 
-Run:  pythonw run.pyw   (or)   python tray.py   (or the built .exe)
+Two things about this loop are load-bearing and easy to undo by accident:
+
+  * Rebuilding the tray icon is expensive. pystray's Win32 backend serializes
+    the PIL image to a temp .ico on disk and re-registers it with the shell via
+    Shell_NotifyIcon — a synchronous round-trip to explorer.exe. So the icon,
+    the tooltip, and the menu are each rewritten only when their *content*
+    actually changes, not on every pass.
+  * The watchdog observer sets `_dirty` on every transcript write, and Claude
+    Code writes continuously while you work. Without MIN_INTERVAL the loop
+    free-runs at whatever a pass costs (~0.3s), which floods the notification
+    area and wedges the tray until you hover it.
+
+Run:  pythonw launcher.pyw   (or)   python tray.py   (or the built .exe)
 """
 import os
 import sys
 import threading
+import time
+import traceback
 import webbrowser
 from datetime import datetime
 
@@ -26,7 +39,9 @@ from server import make_server
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 PORT = 8787
-REFRESH_SECONDS = 5
+REFRESH_SECONDS = 5      # idle cadence: poll at least this often
+MIN_INTERVAL = 2.0       # floor between passes, whatever the watchdog says
+SAVE_SECONDS = 120       # how often to persist the engine's parse cache
 
 # When frozen by PyInstaller, bundled files unpack under sys._MEIPASS.
 _HERE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
@@ -74,13 +89,24 @@ def reset_str_time(epoch):
     return datetime.fromtimestamp(epoch).strftime("%I:%M%p").lstrip("0")
 
 
+_FONTS = {}
+
+
 def _font(size):
-    for path in (r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\arial.ttf"):
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+    """Cached TrueType load. make_image's fitting loop asks for up to a dozen
+    sizes per render, and ImageFont.truetype re-reads the file every call."""
+    f = _FONTS.get(size)
+    if f is None:
+        for path in (r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\arial.ttf"):
+            try:
+                f = ImageFont.truetype(path, size)
+                break
+            except OSError:
+                continue
+        if f is None:
+            f = ImageFont.load_default()
+        _FONTS[size] = f
+    return f
 
 
 def make_image(text, accent):
@@ -108,24 +134,41 @@ class App:
         self.quota = {}
         self.pace = {}
         self.quota_enabled = True
+        self.auto_refresh = True
         self.url = ""
         self.icon = None
         self.window = None          # DashboardWindow, when pywebview is present
         self.history = pacing.SampleStore()
+        self.last_error = None
         self._stop = threading.Event()
         self._dirty = threading.Event()
+        self._icon_key = None       # (text, accent) currently drawn
+        self._title = None          # tooltip currently registered
+        self._menu_key = None       # label tuple currently in the menu
+        self._last_save = 0.0
+
+    # ---- snapshots served to the HTTP layer -------------------------------
+    # Both of these hand back whatever the updater last produced. `snap`,
+    # `quota` and `pace` are only ever *replaced* (never mutated in place), so
+    # a reader on an HTTP thread always sees one coherent object. The point is
+    # that /api/quota must never make a network call on the request thread —
+    # an 8s urlopen timeout there is a dashboard that hangs on a cold network.
 
     def quota_snapshot(self):
         if not self.quota_enabled:
             return {"enabled": False}
-        # Shallow-copy: quota.fetch() hands back its cached dict, and the
-        # per-request keys we add here have no business living in that cache.
-        data = dict(quota.fetch())
+        q = self.quota
+        if not q:
+            return {"enabled": True, "available": False,
+                    "reason": "starting up — first reading on its way"}
+        data = dict(q)
         data["enabled"] = True
-        if data.get("available"):
-            data["pacing"] = pacing.compute(data.get("limits") or {},
-                                            store=self.history)
+        if data.get("available") and self.pace:
+            data["pacing"] = self.pace
         return data
+
+    def usage_snapshot(self):
+        return self.snap or self.engine.snapshot()
 
     # ---- limit helpers ----
     def _limits(self):
@@ -144,15 +187,36 @@ class App:
     def _win(self, key):
         return (self.snap.get("windows") or {}).get(key) or {}
 
+    def _quota_state(self):
+        """Short reason the limit labels have nothing to show, or None."""
+        if not self.quota_enabled:
+            return "live quota off"
+        q = self.quota
+        if not q:
+            return "starting…"
+        if not q.get("available"):
+            return "not connected"
+        return None
+
     # ---- dynamic menu labels (pystray passes the item arg) ----
     def lbl_5h(self, item=None):
+        state = self._quota_state()
+        if state:
+            return "5-hour limit:  — ({})".format(state)
         u = self._util("five_hour")
         if u is None:
-            return "5-hour limit:  — (not connected)"
+            # Connected fine — the endpoint simply reports no five_hour block
+            # until one opens. That is not the same as being disconnected, and
+            # calling it "not connected" sent me looking for auth problems that
+            # were never there.
+            return "5-hour limit:  — (no session window open yet)"
         r = reset_str((self._limits().get("five_hour") or {}).get("resets_at"))
         return "5-hour limit:  {}%{}".format(int(u), "  · resets " + r if r else "")
 
     def lbl_week(self, item=None):
+        state = self._quota_state()
+        if state:
+            return "Weekly limit:  — ({})".format(state)
         u = self._util("seven_day")
         uo = self._util("seven_day_opus")
         if u is None and uo is None:
@@ -183,9 +247,16 @@ class App:
         return line
 
     def lbl_today(self, item=None):
+        # `snap` empty means the updater hasn't produced a reading yet, which is
+        # the honest test — a warm parse cache has real numbers within a second,
+        # a cold one takes as long as your history is long.
+        if not self.snap:
+            return "Today (cost):  scanning transcripts…"
         return "Today (cost):  " + money(self._win("today").get("cost", 0))
 
     def lbl_all(self, item=None):
+        if not self.snap:
+            return "All-time (cost):  —"
         return "All-time (cost):  " + money(self._win("all").get("cost", 0))
 
     # ---- actions ----
@@ -204,20 +275,45 @@ class App:
         self.quota_enabled = not self.quota_enabled
         self._dirty.set()
 
+    def toggle_auto_refresh(self, icon, item):
+        self.auto_refresh = not self.auto_refresh
+        quota.invalidate()
+        self._dirty.set()
+
+    def notify(self, message, title=None):
+        if self.icon is None:
+            return
+        try:
+            self.icon.notify(message, title or "Claude Usage")
+        except Exception:
+            pass
+
     def attempt_refresh(self, *_):
         def work():
-            self.quota = quota.fetch(force=True, allow_refresh=True, force_refresh_token=True)
-            self._update_icon()
-            if self.icon:
-                self.icon.update_menu()
+            res = quota.fetch(force=True, allow_refresh=True, force_refresh_token=True)
+            if res.get("available"):
+                self.quota = res
+                self.notify("Live limits are connected again.", "Token refreshed")
+            else:
+                # Deliberately do NOT overwrite self.quota here: a failed manual
+                # attempt used to evict a perfectly good reading and blank the
+                # tray for five minutes. quota.fetch() stored this failure with
+                # a zero TTL, so the next pass re-reads and restores live data.
+                self.notify(res.get("reason") or "unknown error", "Token refresh failed")
+            self._dirty.set()
         threading.Thread(target=work, daemon=True).start()
 
     def force_refresh(self, *_):
+        quota.invalidate()
         self._dirty.set()
 
     def quit(self, *_):
         self._stop.set()
         self._dirty.set()
+        try:
+            self.engine.save_cache()
+        except Exception:
+            pass
         if self.icon:
             self.icon.stop()
         # Tear down the pywebview GUI loop (unblocks the main thread) last.
@@ -227,27 +323,46 @@ class App:
     # ---- background loop ----
     def _updater(self):
         while not self._stop.is_set():
-            self.engine.refresh()
-            self.snap = self.engine.snapshot()
-            if self.quota_enabled:
-                # Never let a quota hiccup kill the refresh loop — without this
-                # the tray would silently freeze at its startup state.
-                try:
-                    self.quota = quota.fetch()  # read-only, cached
-                except Exception as exc:
-                    self.quota = {"available": False, "reason": str(exc)}
-                self._sample()
-            else:
-                self.quota = {}
-                self.pace = {}
-            self._update_icon()
-            if self.icon is not None:
-                try:
-                    self.icon.update_menu()
-                except Exception:
-                    pass
-            self._dirty.wait(timeout=REFRESH_SECONDS)
+            try:
+                self._tick()
+            except Exception:
+                # A malformed transcript line or a transient Win32 failure must
+                # never kill this thread. When it did, the tray silently froze
+                # at its last values and only a restart brought it back.
+                self.last_error = traceback.format_exc(limit=4)
+            if self._stop.is_set():
+                break
+            # Hard floor between passes. Every watchdog event that lands during
+            # the work and this sleep collapses into the single clear() below.
+            if self._stop.wait(MIN_INTERVAL):
+                break
             self._dirty.clear()
+            if self._stop.is_set():
+                break       # quit() sets _dirty right after _stop; don't out-race it
+            # Then wake on the next change, or on the idle cadence.
+            self._dirty.wait(timeout=REFRESH_SECONDS)
+
+    def _tick(self):
+        self.engine.refresh()
+        self.snap = self.engine.snapshot()
+        if self.quota_enabled:
+            try:
+                self.quota = quota.fetch(allow_refresh=self.auto_refresh)
+            except Exception as exc:
+                self.quota = {"available": False, "reason": str(exc)}
+            self._sample()
+        else:
+            self.quota = {}
+            self.pace = {}
+        self._update_icon()
+        self._update_menu()
+        now = time.monotonic()
+        if now - self._last_save >= SAVE_SECONDS:
+            self._last_save = now
+            try:
+                self.engine.save_cache()
+            except Exception:
+                pass
 
     def _sample(self):
         """Record the reading and recompute pacing. The updater is the only
@@ -262,12 +377,35 @@ class App:
         except Exception:
             self.pace = {}   # pacing is advisory; never break the loop over it
 
+    def _menu_signature(self):
+        return (self.lbl_5h(), self.lbl_week(), self.lbl_day(), self.lbl_pace(),
+                self.lbl_today(), self.lbl_all(), self.quota_enabled, self.auto_refresh)
+
+    def _update_menu(self):
+        """Rebuild the popup only when a label actually reads differently.
+
+        pystray's _update_menu does DestroyMenu + a full rebuild, and it runs on
+        this thread while the message-loop thread may be holding that same
+        handle inside a live TrackPopupMenuEx. Calling it several times a second
+        was both wasteful and a real race.
+        """
+        if self.icon is None:
+            return
+        sig = self._menu_signature()
+        if sig == self._menu_key:
+            return
+        self._menu_key = sig
+        try:
+            self.icon.update_menu()
+        except Exception:
+            pass
+
     def _update_icon(self):
         if self.icon is None:
             return
         u = self._worst_util()
         if u is not None:
-            self.icon.icon = make_image("{}%".format(int(round(u))), util_accent(u))
+            text, accent = "{}%".format(int(round(u))), util_accent(u)
             u5, u7 = self._util("five_hour"), self._util("seven_day")
             r5 = reset_str((self._limits().get("five_hour") or {}).get("resets_at"))
             line2 = "5h {}%".format(int(u5)) if u5 is not None else "5h —"
@@ -278,14 +416,28 @@ class App:
             head = (self.pace or {}).get("headline")
             if head:
                 title += "\n" + head
-            # Shell_NotifyIcon's tooltip is a 128-char buffer; anything longer
-            # is dropped wholesale rather than clipped, so clip it ourselves.
-            self.icon.title = title if len(title) <= 127 else title[:126] + "…"
+        elif not self.snap:
+            text, accent = "…", CALM
+            title = "Claude Usage  ·  scanning transcripts…"
         else:
             today = self._win("today").get("cost", 0)
-            self.icon.icon = make_image(money(today), CALM)
-            reason = (self.quota or {}).get("reason", "live limits off")
-            self.icon.title = "Claude Usage  ·  Today {}\n(limits: {})".format(money(today), reason)
+            text, accent = money(today), CALM
+            reason = self._quota_state() or (self.quota or {}).get("reason") or "no window open yet"
+            title = "Claude Usage  ·  Today {}\n(limits: {})".format(money(today), reason)
+
+        # Shell_NotifyIcon's tooltip is a 128-char buffer; anything longer is
+        # dropped wholesale rather than clipped, so clip it ourselves.
+        if len(title) > 127:
+            title = title[:126] + "…"
+
+        # Only touch the shell when the pixels or the text would differ.
+        key = (text, accent)
+        if key != self._icon_key:
+            self._icon_key = key
+            self.icon.icon = make_image(text, accent)
+        if title != self._title:
+            self._title = title
+            self.icon.title = title
 
 
 def start_watcher(app):
@@ -323,6 +475,8 @@ def build_menu(app):
         pystray.MenuItem(app.lbl_all, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Live quota", app.toggle_quota, checked=lambda item: app.quota_enabled),
+        pystray.MenuItem("Auto-refresh token", app.toggle_auto_refresh,
+                         checked=lambda item: app.auto_refresh),
         pystray.MenuItem("Attempt token refresh", app.attempt_refresh),
         pystray.MenuItem("Refresh now", app.force_refresh),
         pystray.Menu.SEPARATOR,
@@ -332,8 +486,15 @@ def build_menu(app):
 
 def main():
     app = App()
-    app.engine.refresh()
-    app.snap = app.engine.snapshot()
+    # Warm start from the last run's parse cache. A cold scan of a large
+    # history takes over a minute, and it used to run *before* the server, the
+    # tray icon or the window existed — so the app was invisible for that whole
+    # time, and the launcher's single-instance probe had nothing to answer on.
+    # The first real scan now happens on the updater thread instead.
+    try:
+        app.engine.load_cache()
+    except Exception:
+        pass
 
     srv = make_server(app, port=PORT)
     _, port = srv.server_address

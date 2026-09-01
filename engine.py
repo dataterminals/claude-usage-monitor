@@ -7,16 +7,35 @@ snapshots aggregated by window / model / project / session / time.
 Reads incrementally (byte offsets per file) so the growing active-session
 transcript is cheap to re-scan, and dedupes on the API message id + requestId
 so a re-logged line is never double-counted.
+
+Those offsets are also persisted to disk (see load_cache/save_cache), because
+a cold scan is O(everything you have ever done): a 333 MB / 622-file history
+takes ~72 s to parse from scratch, and paying that at every launch is what made
+starting the app feel like it wasn't counting anything yet.
+
+Parsing is deliberately paranoid about record shape. A single malformed line
+used to raise straight through the updater thread and freeze the tray until a
+restart, so anything unexpected here is skipped, never raised.
 """
 import glob
+import hashlib
 import json
 import os
+import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 
 from pricing import cost_for_record
 
 _TOKEN_KEYS = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h")
+
+_CACHE_VERSION = 1
+# Sanity bounds for a transcript timestamp. A bogus epoch (0, or a far-future
+# value from a corrupt line) makes datetime.fromtimestamp raise deep inside
+# snapshot(), so reject it at parse time instead.
+_MIN_EPOCH = 946684800.0                    # 2000-01-01
+_MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
 
 
 def _blank():
@@ -45,6 +64,19 @@ def _serialize(acc, **extra):
     return out
 
 
+def _num(v):
+    """Coerce a usage field to a non-negative int; anything odd becomes 0."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0
+    return int(v) if v > 0 else 0
+
+
+def _cache_path(projects_dir):
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    key = hashlib.sha1(os.path.abspath(projects_dir).encode("utf-8")).hexdigest()[:12]
+    return os.path.join(base, "ClaudeUsageMonitor", "engine-cache-{}.json".format(key))
+
+
 class UsageEngine:
     def __init__(self, projects_dir):
         self.projects_dir = projects_dir
@@ -53,18 +85,89 @@ class UsageEngine:
         self._records = []      # list of record dicts
         self._lock = threading.Lock()
         self.last_scan_epoch = None
+        self.first_scan_done = False
+        self.cache_file = _cache_path(projects_dir)
+        self._saved_count = 0
+
+    # ---- persistence ------------------------------------------------------
+
+    def load_cache(self):
+        """Restore offsets/records from the last run. Returns True on a hit.
+
+        Any problem at all falls through to a full rescan — the cache is an
+        optimization, never a source of truth.
+        """
+        try:
+            with open(self.cache_file, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(doc, dict) or doc.get("version") != _CACHE_VERSION:
+            return False
+        if doc.get("projects_dir") != self.projects_dir:
+            return False
+        offsets, seen, records = doc.get("offsets"), doc.get("seen"), doc.get("records")
+        if not isinstance(offsets, dict) or not isinstance(seen, list) \
+                or not isinstance(records, list):
+            return False
+        with self._lock:
+            self._offsets = {k: v for k, v in offsets.items() if isinstance(v, int)}
+            self._seen = set(seen)
+            self._records = records
+            self._saved_count = len(records)
+        return True
+
+    def save_cache(self):
+        """Write offsets/records so the next launch starts warm. Never raises."""
+        with self._lock:
+            if len(self._records) == self._saved_count:
+                return False
+            # Drop offsets for transcripts that no longer exist, so the file
+            # doesn't grow a tail of dead paths forever.
+            offsets = {p: o for p, o in self._offsets.items() if os.path.exists(p)}
+            doc = {
+                "version": _CACHE_VERSION,
+                "projects_dir": self.projects_dir,
+                "saved_epoch": time.time(),
+                "offsets": offsets,
+                "seen": list(self._seen),
+                "records": list(self._records),
+            }
+            count = len(self._records)
+        tmp = self.cache_file + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(doc, f, separators=(",", ":"))
+            os.replace(tmp, self.cache_file)
+        except (OSError, ValueError, TypeError):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return False
+        with self._lock:
+            self._saved_count = count
+        return True
 
     # ---- ingest -----------------------------------------------------------
 
     def refresh(self):
         pattern = os.path.join(self.projects_dir, "**", "*.jsonl")
         with self._lock:
-            for path in glob.glob(pattern, recursive=True):
+            try:
+                paths = glob.glob(pattern, recursive=True)
+            except OSError:
+                paths = []
+            for path in paths:
                 try:
                     self._read_file(path)
-                except (OSError, ValueError):
+                except Exception:
+                    # One unreadable / malformed transcript must not abort the scan
+                    # (and must not reach the updater thread, which dies on it).
                     continue
             self.last_scan_epoch = datetime.now(timezone.utc).timestamp()
+            self.first_scan_done = True
 
     def _read_file(self, path):
         size = os.path.getsize(path)
@@ -87,60 +190,77 @@ class UsageEngine:
                 obj = json.loads(raw)
             except ValueError:
                 continue
-            rec = self._parse(obj, path)
+            try:
+                rec = self._parse(obj, path)
+            except Exception:
+                continue        # malformed record shape — skip the line
             if rec is not None:
                 self._records.append(rec)
 
     def _parse(self, obj, path):
-        if obj.get("type") != "assistant":
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
             return None
-        msg = obj.get("message") or {}
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            return None
         usage = msg.get("usage")
-        if not usage:
+        if not isinstance(usage, dict) or not usage:
             return None
         model = msg.get("model") or "unknown"
-        if model == "<synthetic>":
+        if not isinstance(model, str) or model == "<synthetic>":
             return None
 
         mid, rid = msg.get("id"), obj.get("requestId")
         key = "{}|{}".format(mid, rid) if (mid or rid) else obj.get("uuid", "")
-        if not key or key in self._seen:
+        if not key or not isinstance(key, str) or key in self._seen:
             return None
-        self._seen.add(key)
 
         ts_raw = obj.get("timestamp")
         try:
             ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-        except (AttributeError, ValueError):
+            epoch = ts.timestamp()
+        except (AttributeError, TypeError, ValueError, OSError, OverflowError):
+            return None
+        if not (_MIN_EPOCH < epoch < time.time() + _MAX_SKEW):
             return None
 
-        cc = usage.get("cache_creation") or {}
+        self._seen.add(key)
+
+        cc = usage.get("cache_creation")
+        if not isinstance(cc, dict):
+            cc = {}
         c5 = cc.get("ephemeral_5m_input_tokens")
         c1 = cc.get("ephemeral_1h_input_tokens")
         if c5 is None and c1 is None:
             # no ephemeral split available — bill the lump as 5-minute cache
-            c5 = usage.get("cache_creation_input_tokens", 0) or 0
+            c5 = usage.get("cache_creation_input_tokens")
             c1 = 0
         tokens = {
-            "input": usage.get("input_tokens", 0) or 0,
-            "output": usage.get("output_tokens", 0) or 0,
-            "cache_read": usage.get("cache_read_input_tokens", 0) or 0,
-            "cache_write_5m": c5 or 0,
-            "cache_write_1h": c1 or 0,
+            "input": _num(usage.get("input_tokens")),
+            "output": _num(usage.get("output_tokens")),
+            "cache_read": _num(usage.get("cache_read_input_tokens")),
+            "cache_write_5m": _num(c5),
+            "cache_write_1h": _num(c1),
         }
-        stu = usage.get("server_tool_use") or {}
-        cwd = (obj.get("cwd") or "").rstrip("/\\")
+        stu = usage.get("server_tool_use")
+        if not isinstance(stu, dict):
+            stu = {}
+        cwd = obj.get("cwd")
+        cwd = cwd.rstrip("/\\") if isinstance(cwd, str) else ""
         project = os.path.basename(cwd) or os.path.basename(os.path.dirname(path)) or "(unknown)"
 
+        def _str(v):
+            return v if isinstance(v, str) else ""
+
         return {
-            "epoch": ts.timestamp(),
+            "epoch": epoch,
             "model": model,
             "project": project,
-            "session": obj.get("sessionId", "") or "",
-            "branch": obj.get("gitBranch", "") or "",
+            "session": _str(obj.get("sessionId")),
+            "branch": _str(obj.get("gitBranch")),
             "tokens": tokens,
-            "web_search": stu.get("web_search_requests", 0) or 0,
-            "web_fetch": stu.get("web_fetch_requests", 0) or 0,
+            "web_search": _num(stu.get("web_search_requests")),
+            "web_fetch": _num(stu.get("web_fetch_requests")),
             "cost": cost_for_record(model, tokens),
         }
 
@@ -253,6 +373,7 @@ class UsageEngine:
                 "record_count": len(recs),
                 "projects_dir": self.projects_dir,
                 "models": sorted(by_model.keys()),
+                "scanning": not self.first_scan_done,
             },
             "windows": {
                 "today": _serialize(today, label="Today"),

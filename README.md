@@ -36,8 +36,8 @@ sessions.
 **Tray icon:** your highest utilization % (green → amber → red). Tooltip shows the
 5h and weekly %, reset time, and the pacing line (*"Ahead of pace — resume in
 1h 23m"*). Menu: **Open dashboard** (the native window), the same limits, today's
-allowance, pacing, cost totals, a Live-quota toggle, an *Attempt token refresh*
-action, refresh, and quit.
+allowance, pacing, cost totals, a Live-quota toggle, an *Auto-refresh token*
+toggle, an *Attempt token refresh* action, refresh, and quit.
 
 **The window:** a real desktop window (Edge WebView2, already on Windows) — tall
 and narrow by default, dark-themed, resizable so you can size it into a corner. It
@@ -165,14 +165,26 @@ The gauges come from the same endpoint Claude Code's `/usage` uses:
 `GET https://api.anthropic.com/api/oauth/usage` with your OAuth token from
 `~/.claude/.credentials.json`. Two things to know:
 
-- **It's read-only by default.** The app never writes your credentials on its own.
-- If your stored token is stale/rejected (a `401`), the gauges show *not
-  connected*. Fix it either way:
-  1. **Run `/login` in a Claude Code terminal** (cleanest, zero risk) — mints a
-     fresh, correctly-scoped token that the app then reads.
-  2. **Tray → *Attempt token refresh*** — the app uses the stored refresh token to
-     mint a new one. This *rotates* the refresh token, which can force a re-login
-     of whatever Claude Code login owns it, so it's opt-in, never automatic.
+- **Reading is free of side effects.** Fetching the gauges never writes your
+  credentials.
+- **The cache follows your credentials file.** When Claude Code refreshes its own
+  token — or you run `/login` — the app notices the file changed and re-reads it
+  on the next poll, instead of serving a stale failure for the rest of the TTL.
+  You should never have to restart the app to pick up a fresh login.
+- **Auto-refresh token** (tray, on by default) mints a new access token when the
+  stored one is within five minutes of expiring, which is what keeps the gauges
+  alive across an overnight sleep. It *rotates* the refresh token, so the app
+  copies `.credentials.json` to `.credentials.json.bak` before its first write.
+  Turn it off if you'd rather Claude Code be the only thing touching that file.
+- If the token is rejected anyway (`401`), fix it either way:
+  1. **Run `/login` in a Claude Code terminal** — mints a fresh, correctly-scoped
+     token that the app picks up within a poll.
+  2. **Tray → *Attempt token refresh*** — forces a refresh now and reports the
+     result in a notification. A failure here leaves your existing gauges alone.
+
+Note the difference between *not connected* (an auth or network problem) and
+*no session window open yet* — the endpoint reports no 5-hour block until you
+actually spend tokens in one, and that is not a failure.
 
 Until connected, the self-tracked burn panel still gives you a local read on usage.
 
@@ -180,8 +192,8 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 
 | File | Role |
 |---|---|
-| `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). |
-| `quota.py` | The `/usage` reader + opt-in token refresh. Read-only unless `allow_refresh=True`. |
+| `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
+| `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL. Read-only unless `allow_refresh=True`. |
 | `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, and the on-disk reading history. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
@@ -196,3 +208,9 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 
 100% local except the opt-in quota call to Anthropic's own API with your own
 token. No telemetry. The dashboard binds to loopback only.
+
+Two files are written under `%LOCALAPPDATA%\ClaudeUsageMonitor`: the reading
+history that pacing needs (`quota-history.json` — utilization percentages and
+reset times, no content) and the parser cache (`engine-cache-*.json` — the
+per-message token counts and model/project names already in your transcripts, no
+prompts or replies). Delete either at any time; both are rebuilt.

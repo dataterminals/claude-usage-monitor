@@ -298,8 +298,15 @@ function renderLimits(usage, quota){
     el("hero").innerHTML = `Live limit gauges are <b>off</b>. Enable “Live quota” in the tray menu.`;
     host.innerHTML = ""; el("pacerCard").classList.add("hidden");
   } else if(!quota.available){
-    el("hero").innerHTML = `Live limit gauges <b>not connected</b>.`;
-    host.innerHTML = `<section class="banner">${quota.reason || "unavailable"}.<br>
+    // "Starting up" is not a failure; showing the /login banner for it sends
+    // you hunting an auth problem that isn't there.
+    const starting = /^starting up/.test(quota.reason || "");
+    el("hero").innerHTML = starting
+      ? `Connecting to live limits…`
+      : `Live limit gauges <b>not connected</b>.`;
+    host.innerHTML = starting
+      ? `<section class="banner">${quota.reason}.</section>`
+      : `<section class="banner">${quota.reason || "unavailable"}.<br>
       Fix by running <code>/login</code> in a Claude Code terminal, or use the tray’s
       <b>Attempt token refresh</b>. Until then, the self-tracked burn below still works.</section>`;
     el("pacerCard").classList.add("hidden");
@@ -322,7 +329,10 @@ function renderLimits(usage, quota){
       el("hero").className = "hero "+cls;
       el("hero").innerHTML = `Tightest cap: <b>${LIMIT_LABEL[worstKey]}</b> at <b>${Math.floor(worst.utilization)}%</b>. ${verb}`;
     } else {
-      el("hero").className="hero"; el("hero").innerHTML = `Connected — no limit data returned yet.`;
+      // Connected, but the endpoint reports no open window. Nothing is wrong:
+      // a 5-hour block only exists once you spend tokens in it.
+      el("hero").className="hero";
+      el("hero").innerHTML = `Connected — no session window is open yet. Gauges appear once you start using tokens.`;
     }
     renderPacer(P);
     let cards="";
@@ -383,7 +393,9 @@ async function tick(){
     ]);
     renderLimits(usage, quota);
     renderDetails(usage);
-    el("models").textContent = `${usage.meta.record_count.toLocaleString()} messages`;
+    el("models").textContent = usage.meta.scanning
+      ? "scanning transcripts…"
+      : `${usage.meta.record_count.toLocaleString()} messages`;
     el("dot").className = "dot" + (usage.active.active ? " live" : "");
     el("clock").textContent = "updated " + new Date().toLocaleTimeString();
   } catch(e){ el("clock").textContent = "offline"; el("dot").className="dot"; }

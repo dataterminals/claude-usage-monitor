@@ -62,6 +62,11 @@ class State:
                                             store=self.history)
         return data
 
+    def usage_snapshot(self):
+        # The tray serves its updater's cached snapshot here; headless has no
+        # updater, so aggregate on the request thread. Still no network call.
+        return self.engine.snapshot()
+
     def sample(self):
         """Record a reading so "used today" has a baseline. Mirrors the tray's
         updater — this process is the only writer when running headless."""
@@ -79,6 +84,12 @@ def _iso(epoch):
 
 def main():
     state = State()
+    # Warm start from the last run's parse cache; a cold scan of a large
+    # transcript history takes over a minute.
+    try:
+        state.engine.load_cache()
+    except Exception:
+        pass
     state.engine.refresh()
     port = int(os.environ.get("CLAUDE_USAGE_PORT", "8787"))
     srv = make_server(state, port=port)
@@ -86,11 +97,15 @@ def main():
     print("Claude Usage dashboard -> http://127.0.0.1:{}/".format(bound), flush=True)
 
     def refresher():
+        last_save = time.monotonic()
         while True:
             time.sleep(5)
             try:
                 state.engine.refresh()
                 state.sample()
+                if time.monotonic() - last_save >= 120:
+                    last_save = time.monotonic()
+                    state.engine.save_cache()
             except Exception:
                 pass
 
