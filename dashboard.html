@@ -108,7 +108,15 @@
   @media (max-width:819px){ .gauges { grid-template-columns:1fr; } }
 
   /* Two renderings of the same fact; the width decides which one survives. */
-  .name-min, .pace-min, #burnMin { display:none; }
+  .name-min, .pace-min, .reset-min, #burnMin { display:none; }
+
+  /* The rollover clock. A countdown says how long; this says when — which is
+     what you actually plan around — so it survives to the narrowest tier. */
+  .reset { color:var(--faint); font-size:11.5px; margin-top:3px; }
+  .reset b { color:var(--ink); font-weight:600; }
+  .reset:empty { display:none; }
+  .roll { color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .roll:empty { display:none; }
 
   /* Compact burn block — label over value throughout, because at 110px there
      is no room for a label and a number on the same line. */
@@ -164,6 +172,10 @@
     .gauge[data-key="seven_day_opus"], .gauge[data-key="seven_day_sonnet"] { display:none; }
     .name-full { display:none; }  .name-min { display:inline; }
     .pace-full { display:none; }  .pace-min { display:block; }
+    .reset-full { display:none; }  .reset-min { display:block; }
+    .reset { font-size:10.5px; margin-top:2px; }
+    /* the 5H card's own rollover line carries it at this width */
+    #rollover { display:none; }
     .gauge .pct { font-size:23px; }
     .gauge .name { font-size:10.5px; }
     .bar { height:9px; margin:7px 0 6px; }
@@ -203,6 +215,7 @@
     .pacer .why { display:none; }
     .pacer .lead { font-size:15px; }
     #clock { display:none; }
+    .reset { font-size:9.5px; }
     .bm-lead { font-size:17px; }
     .bm-val { font-size:10.5px; }
     .bm-sub { font-size:9.5px; }
@@ -216,6 +229,9 @@
   .squeeze-2 .gauge[data-key="seven_day_opus"],
   .squeeze-2 .gauge[data-key="seven_day_sonnet"] { display:none; }
   .squeeze-2 .pace-full { display:none; }  .squeeze-2 .pace-min { display:block; }
+  /* the rollover is the one line that never gets squeezed away */
+  .squeeze-1 .reset-full, .squeeze-2 .reset-full { display:none; }
+  .squeeze-1 .reset-min, .squeeze-2 .reset-min { display:block; }
   /* Out of density levels on a genuinely tiny window: scroll rather than
      clip. A scrollbar makes a worse strip; silently losing the bottom card
      makes a wrong one. Class beats the element rule above on specificity. */
@@ -229,7 +245,7 @@
   <header>
     <h1>Claude&nbsp;Usage</h1>
     <span class="sub" id="models"></span>
-    <span class="status"><span class="dot" id="dot"></span><span id="clock">connecting…</span></span>
+    <span class="status"><span class="dot" id="dot"></span><span id="clock">connecting…</span><span class="roll" id="rollover"></span></span>
   </header>
 
   <div class="tabs">
@@ -288,6 +304,9 @@ const F = {
   when(iso){ return new Date(iso*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
 };
 const el = id => document.getElementById(id);
+// quota's limits carry `resets_at` as ISO8601; pacing carries epochs. This
+// bridges the two so a missing pacing window still yields a rollover time.
+const isoEpoch = s => { const t = Date.parse(s || ""); return isFinite(t) ? t / 1000 : null; };
 function color(u){ return u>=90?"var(--bad)":u>=70?"var(--warn)":"var(--good)"; }
 function modelColor(m){ if(m.includes("opus")) return "var(--opus)"; if(m.includes("sonnet")) return "var(--sonnet)";
   if(m.includes("fable")||m.includes("mythos")) return "var(--fable)"; if(m.includes("haiku")) return "var(--haiku)"; return "var(--other)"; }
@@ -414,21 +433,30 @@ function gaugeCard(key, lim, p, day){
   if(p){
     tick = `<i style="left:${Math.max(0,Math.min(100,p.ideal_utilization))}%" title="an even spend would be here now"></i>`;
     if(p.state === "capped"){
-      paceLine = `<span style="color:var(--bad)">At the cap</span> · resets in ${until(p.reset_epoch)}`;
-      paceMin  = `<span style="color:var(--bad)">at cap</span> · ${until(p.reset_epoch)}`;
+      paceLine = `<span style="color:var(--bad)">At the cap</span>`;
+      paceMin  = `<span style="color:var(--bad)">at cap</span>`;
     } else if(p.wait_seconds > 0){
       paceLine = `<span style="color:var(--warn)">${p.delta.toFixed(1)}pt ahead of pace</span> — resume ${F.at(p.resume_at_epoch)} (${until(p.resume_at_epoch)})`;
       paceMin  = `<span style="color:var(--warn)">wait ${until(p.resume_at_epoch)}</span>`;
     } else {
-      paceLine = `<span style="color:var(--good)">${F.durS(p.slack_seconds)} banked</span> · resets in ${until(p.reset_epoch)}`;
+      paceLine = `<span style="color:var(--good)">${F.durS(p.slack_seconds)} banked</span>`;
       paceMin  = `<span style="color:var(--good)">+${F.durS(p.slack_seconds)}</span>`;
     }
   }
+  // Rollover is its own line, not a tail on the pace verdict: it is the fact you
+  // plan around, and it has to survive every tier and every pace state. Prefer
+  // pacing's epoch, fall back to the raw limit's ISO so it still shows when
+  // pacing has not computed a window.
+  const resetAt = (p && p.reset_epoch) || isoEpoch(lim.resets_at);
+  const resetFull = resetAt ? `Rolls over <b>${F.at(resetAt)}</b> · ${until(resetAt)}` : "";
+  const resetMin  = resetAt ? `↻ ${F.at(resetAt)}` : "";
   return `<div class="card gauge" data-key="${key}">
     <div class="top"><span class="name"><span class="name-full">${LIMIT_LABEL[key]||key}</span><span class="name-min">${SHORT_LABEL[key]||key}</span></span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
     <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span>${tick}</div>
     <div class="pace pace-full">${paceLine}</div>
     <div class="pace pace-min">${paceMin}</div>
+    <div class="reset reset-full">${resetFull}</div>
+    <div class="reset reset-min">${resetMin}</div>
     ${dayStrip(day)}
   </div>`;
 }
@@ -440,6 +468,7 @@ function renderLimits(usage, quota){
   if(!quota || !quota.enabled){
     el("hero").innerHTML = `Live limit gauges are <b>off</b>. Enable “Live quota” in the tray menu.`;
     host.innerHTML = ""; el("pacerCard").classList.add("hidden");
+    el("rollover").textContent = "";
   } else if(!quota.available){
     // "Starting up" is not a failure; showing the /login banner for it sends
     // you hunting an auth problem that isn't there.
@@ -453,10 +482,16 @@ function renderLimits(usage, quota){
       Fix by running <code>/login</code> in a Claude Code terminal, or use the tray’s
       <b>Attempt token refresh</b>. Until then, the self-tracked burn below still works.</section>`;
     el("pacerCard").classList.add("hidden");
+    el("rollover").textContent = "";
   } else {
     const L = quota.limits || {};
     const P = quota.pacing || {};
     const W = P.windows || {};
+    // The Details tab has no gauges, so the 5-hour rollover also rides in the
+    // header — that is the one view the per-card reset lines cannot reach.
+    const fiveReset = (W.five_hour && W.five_hour.reset_epoch) ||
+                      isoEpoch(L.five_hour && L.five_hour.resets_at);
+    el("rollover").textContent = fiveReset ? `↻ 5h ${F.at(fiveReset)}` : "";
     // hero = the tightest limit
     let worst=null, worstKey=null;
     for(const k of ORDER){ const v=L[k];

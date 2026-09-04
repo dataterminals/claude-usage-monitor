@@ -111,8 +111,8 @@ If you regenerate the app icon, re-run `python make_icons.py` first (writes
 The window is built to survive being dragged narrow and parked against a screen
 edge, full height. Width is the scarce axis (the height is a whole monitor), so
 `dashboard.html` collapses in tiers, each dropping the least load-bearing thing
-and re-flowing what is left. The **5-hour window, the week, and the pacing
-answer are visible in every tier** — that is the invariant.
+and re-flowing what is left. The **5-hour window, the week, the pacing answer,
+and the rollover time are visible in every tier** — that is the invariant.
 
 | width | what changes |
 | --- | --- |
@@ -128,6 +128,19 @@ screen still overflows, it steps down two further density levels, and only if
 *that* fails does it allow scrolling, rather than silently clipping the bottom
 card. Above 440px nothing is hidden and the page scrolls as before, because
 dropping the ledger to save 90px of scrolling is a bad trade at full size.
+
+### The rollover time
+
+Every gauge carries the clock time its window rolls over — `Rolls over 2:00 AM ·
+4h 43m` wide, `↻ 2:00 AM` in the strip. It is a separate line from the pace
+verdict rather than a tail on it, because it has to survive every tier and every
+pace state (banked, ahead, capped), and it is the first thing you actually plan
+around: a countdown says how long, not when. `squeeze` never drops it. The
+Details tab has no gauges, so the 5-hour rollover also rides in the header as
+`↻ 5h 2:00 AM` — that is the one view the per-card lines cannot reach.
+
+Times come from pacing's `reset_epoch`, falling back to the raw limit's
+`resets_at` so a window that pacing has not computed still shows one.
 
 ### The burn panel
 
