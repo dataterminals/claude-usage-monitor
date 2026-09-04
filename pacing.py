@@ -62,16 +62,22 @@ _MIN_SAMPLE_GAP = 300.0        # re-record an unchanged reading at most this oft
 
 
 def _anchor(iso):
-    """A window's `resets_at` as a stable epoch, floored to the minute.
+    """A window's `resets_at` as a stable epoch, rounded to the nearest minute.
 
     The endpoint re-serializes the same reset with a different sub-second part
     on every call (…T17:10:00.889179Z, then …T17:10:00.062571Z), so the raw
     value is unusable as an identity: it would make each day boundary land a
     fraction before the hour and print as 7:59, and — worse — it's the
     generation marker `SampleStore` uses to tell one week's readings from the
-    next, which would then never match itself. Real boundaries sit on whole
-    minutes, so flooring erases the noise and is conservative (never claims a
-    reset later than the real one).
+    next, which would then never match itself.
+
+    Rounding, not flooring: the jitter is centred ON the whole minute, not
+    parked above it, so it lands on both sides — observed live as
+    …T05:59:59.620062Z one poll and …T06:00:00.060670Z the next. Flooring turns
+    that half-second of noise into a whole minute of disagreement, which prints
+    as a rollover time flickering 1:59 AM / 2:00 AM and, worse, fractures the
+    very generation marker this function exists to keep stable. Real boundaries
+    sit on whole minutes, so the nearest minute is also the truer answer.
     """
     if not iso:
         return None
@@ -80,7 +86,7 @@ def _anchor(iso):
         e = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
     except (AttributeError, ValueError, TypeError):
         return None
-    return float(int(e // 60) * 60)
+    return float(int((e + 30) // 60) * 60)
 
 
 def _app_dir():

@@ -154,10 +154,15 @@ print("     under:", p["headline"])
 
 print("\n[13] sub-second jitter in resets_at must not fracture the week generation")
 # The endpoint re-serializes the same reset with a different fraction each call.
+# The last one is the case that used to break: the jitter dips BELOW the whole
+# minute, so flooring anchored it a minute early and split the generation.
 jit = ["2026-08-04T12:00:00.889179+00:00", "2026-08-04T12:00:00.062571+00:00",
-       "2026-08-04T12:00:00.799527+00:00"]
+       "2026-08-04T12:00:00.799527+00:00", "2026-08-04T11:59:59.620062+00:00"]
 check("all three anchor identically", len({pacing._anchor(s) for s in jit}), 1)
 check("anchor is on the minute", pacing._anchor(jit[0]) % 60, 0.0)
+check("sub-boundary jitter anchors up, not back",
+      pacing._anchor("2026-08-04T11:59:59.620062+00:00"),
+      pacing._anchor("2026-08-04T12:00:00.062571+00:00"))
 
 store4 = pacing.SampleStore(os.path.join(tempfile.mkdtemp(), "h4.json"))
 t_day = pacing._anchor(jit[0]) - 4 * 86400          # a boundary inside the week
