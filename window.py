@@ -43,7 +43,10 @@ _TITLE = "Claude Usage"
 _WIDTH = 480
 _HEIGHT = 900
 _BG = "#0e1014"          # matches dashboard --bg so there's no white flash
-_MIN = (360, 480)
+# dashboard.html collapses in tiers down to a ~72px sliver (short label, %,
+# bar, and the pacing countdown), so the floor sits far below anything the full
+# layout would tolerate — the CSS, not this tuple, decides what still fits.
+_MIN = (72, 240)
 
 
 def _nudge_to_front(win):

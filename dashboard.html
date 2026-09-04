@@ -90,6 +90,137 @@
   .pill { font-size:11px; color:var(--dim); }
   .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:820px){ .cols{ grid-template-columns:1fr; } }
+  /* ---------------------------------------------------------------------
+     Collapse tiers — the app parked as a tall strip against a screen edge.
+     Width is the scarce axis (the height is a whole monitor), so each tier
+     drops the least load-bearing thing first and re-flows what is left. The
+     5-hour window, the week, and the pacing answer survive to the narrowest
+     tier; everything else is negotiable. From "strip" down the body is pinned
+     to the viewport and nothing scrolls — fitToViewport() is the backstop.
+     Tiers:  slim <440 · strip <300 · sliver <170 · edge <140
+     --------------------------------------------------------------------- */
+
+  /* The `@media (max-width:820px)` rule earlier in this sheet is dead: the
+     later `.gauges` declaration has equal specificity and re-asserts two
+     columns, so the gauges have always stayed 2-up. Restated here, at the end
+     of the cascade, where it actually lands — two 213px gauges at 480px wrap
+     their own labels. */
+  @media (max-width:819px){ .gauges { grid-template-columns:1fr; } }
+
+  /* Two renderings of the same fact; the width decides which one survives. */
+  .name-min, .pace-min, #burnMin { display:none; }
+
+  /* Compact burn block — label over value throughout, because at 110px there
+     is no room for a label and a number on the same line. */
+  .bm-lead { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; }
+  .bm-unit { font-size:11px; color:var(--dim); font-weight:500; }
+  .bm-sub { color:var(--dim); font-size:10.5px; margin-top:1px; }
+  .bm-spark { height:70px; margin:9px 0 3px; }
+  .bm-spark svg { height:100%; }
+  .bm-cap { color:var(--faint); font-size:9px; }
+  .bm-stat { display:flex; flex-direction:column; margin-top:7px; }
+  .bm-lbl { color:var(--dim); font-size:9px; text-transform:uppercase; letter-spacing:.4px; }
+  .bm-val { font-size:11.5px; font-variant-numeric:tabular-nums; }
+
+  /* --- slim: prose and chrome go, the numbers stay full size ------------- */
+  @media (max-width:439px){
+    .wrap { padding:14px 12px 20px; }
+    .note, .sub { display:none; }
+    h1 { font-size:17px; }
+    .card { padding:12px 13px; border-radius:12px; }
+    section, .gauges { margin-top:10px; }
+    .grid { gap:10px; }
+    .gauge .pct { font-size:26px; }
+    .gauge .name { font-size:11px; }
+    .pacer { gap:11px; }
+    .pacer .glyph { width:34px; height:34px; font-size:16px; border-radius:10px; }
+    .pacer .lead { font-size:21px; }
+    .pacer .why { font-size:11.5px; }
+  }
+
+  /* --- strip: one column of essentials; tabs and the ledger go ----------- */
+  @media (max-width:299px){
+    html, body { height:100%; overflow:hidden; }
+    /* .wrap stays auto-height on purpose: it is what fitToViewport()
+       measures, and pinning it to 100% makes every overflow invisible. */
+    .wrap { padding:9px 8px 10px; }
+    .tabs, h1 { display:none; }
+    /* The ledger stays — a docked strip is mostly empty below the gauges,
+       and burn history is the thing worth putting there. Its wide rows do
+       not survive the width, so swap in the stacked form. */
+    #localBurn { display:none; }
+    #burnMin { display:block; }
+    #localBurnCard h2 { font-size:9.5px; margin:0 0 7px; }
+    /* Details cannot survive this width, so pin Limits on regardless of the
+       last tab click — which may well have left #tab-limits carrying .hidden. */
+    #tab-details { display:none !important; }
+    #tab-limits { display:block !important; }
+    .status { margin-left:0; font-size:10.5px; }
+    .card { padding:10px; border-radius:10px; }
+    section, .gauges { margin-top:8px; }
+    .grid { gap:8px; }
+    .hero { font-size:12.5px; line-height:1.4; }
+    /* The per-model sub-limits are a luxury here; all-models is what binds. */
+    .gauge[data-key="seven_day_opus"], .gauge[data-key="seven_day_sonnet"] { display:none; }
+    .name-full { display:none; }  .name-min { display:inline; }
+    .pace-full { display:none; }  .pace-min { display:block; }
+    .gauge .pct { font-size:23px; }
+    .gauge .name { font-size:10.5px; }
+    .bar { height:9px; margin:7px 0 6px; }
+    .pace-min { font-size:11px; }
+    /* Keep the one day figure that actually changes a decision. */
+    .gauge .day { margin-top:7px; padding-top:7px; }
+    .gauge .day .row:not(.d-left) { display:none; }
+    .pacer .glyph { display:none; }
+    .pacer .lead { font-size:19px; }
+    /* Bounded, not gone: the reason still reads, it just cannot run away. */
+    .pacer .why { font-size:11px; margin-top:2px;
+      display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  }
+
+  /* --- sliver: the hero sentence goes; three blocks remain --------------- */
+  @media (max-width:169px){
+    .wrap { padding:7px 6px 8px; }
+    #heroCard { display:none; }
+    .status { font-size:9.5px; }
+    .card { padding:8px; }
+    .gauge .pct { font-size:21px; }
+    .pacer .lead { font-size:17px; }
+    .pacer .why { -webkit-line-clamp:2; font-size:10px; }
+    .gauge .day { display:none; }
+  }
+
+  /* --- edge: label over number, everything stacks ------------------------ */
+  @media (max-width:139px){
+    /* .top alone is not enough — its two spans are inline and just butt up
+       against each other ("5H48%"). Both have to become blocks to stack. */
+    .gauge .top { display:block; }
+    .gauge .name, .gauge .pct { display:block; }
+    .gauge .name { font-size:9px; letter-spacing:.3px; }
+    .gauge .pct { font-size:19px; line-height:1.1; }
+    .bar { height:7px; margin:5px 0 4px; }
+    .pace-min { font-size:9.5px; line-height:1.3; }
+    .pacer .why { display:none; }
+    .pacer .lead { font-size:15px; }
+    #clock { display:none; }
+    .bm-lead { font-size:17px; }
+    .bm-val { font-size:10.5px; }
+    .bm-sub { font-size:9.5px; }
+  }
+
+  /* Backstop for a short screen: fitToViewport() steps through these until the
+     page fits, so a 90px-wide strip never grows a scrollbar. */
+  .squeeze-1 .note, .squeeze-1 #localBurnCard, .squeeze-1 .pacer .why { display:none; }
+  .squeeze-1 .gauge .day .row:not(.d-left) { display:none; }
+  .squeeze-2 .gauge .day, .squeeze-2 .tabs, .squeeze-2 #heroCard { display:none; }
+  .squeeze-2 .gauge[data-key="seven_day_opus"],
+  .squeeze-2 .gauge[data-key="seven_day_sonnet"] { display:none; }
+  .squeeze-2 .pace-full { display:none; }  .squeeze-2 .pace-min { display:block; }
+  /* Out of density levels on a genuinely tiny window: scroll rather than
+     clip. A scrollbar makes a worse strip; silently losing the bottom card
+     makes a wrong one. Class beats the element rule above on specificity. */
+  .allow-scroll, .allow-scroll body { overflow:auto; height:auto; }
+
   .hidden { display:none; }
 </style>
 </head>
@@ -109,12 +240,13 @@
   <!-- LIMITS TAB -->
   <div id="tab-limits">
     <div class="note">How close you are to your plan caps — the live <code>/usage</code> bars, plus pacing: the tick on each bar is where an even spend would sit right now, and if you're past it you get the wait that puts you back on the line.</div>
-    <section class="card"><div class="hero" id="hero">Loading…</div></section>
+    <section class="card" id="heroCard"><div class="hero" id="hero">Loading…</div></section>
     <section class="card hidden" id="pacerCard"><div class="pacer" id="pacer"></div></section>
     <div id="gaugeHost"></div>
-    <section class="card">
-      <h2>Local burn — self-tracked</h2>
+    <section class="card" id="localBurnCard">
+      <h2><span class="name-full">Local burn — self-tracked</span><span class="name-min">BURN</span></h2>
       <div class="rows" id="localBurn"></div>
+      <div id="burnMin"></div>
     </section>
   </div>
 
@@ -176,6 +308,9 @@ document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
 const ORDER = ["five_hour","seven_day","seven_day_opus","seven_day_sonnet"];
 const LIMIT_LABEL = { five_hour:"5-hour session", seven_day:"This week · all models",
                       seven_day_opus:"This week · Opus", seven_day_sonnet:"This week · Sonnet" };
+// Same four windows, named for a card that is 90px wide.
+const SHORT_LABEL = { five_hour:"5H", seven_day:"WEEK",
+                      seven_day_opus:"OPUS", seven_day_sonnet:"SONNET" };
 const FRESH_WINDOW_S = 1800;   // resume this close to a reset -> just take the fresh window
 
 // Countdowns repaint every second off a fixed target epoch, so they tick
@@ -263,29 +398,37 @@ function dayStrip(d){
     : d.remaining_today < 0 ? "var(--bad)" : d.remaining_today < d.allowance*0.25 ? "var(--warn)" : "var(--good)";
   const banked = d.banked_days;
   return `<div class="day rows">
-    <div class="row"><span class="k">Day ${d.day_number} of 7 · allowance</span><span class="v mono">${d.allowance.toFixed(1)}%</span></div>
-    <div class="row"><span class="k">${sinceLbl}</span><span class="v mono">${usedTxt}</span></div>
-    <div class="row"><span class="k">Left today</span><span class="v mono" style="color:${leftCol}">${leftTxt}</span></div>
-    <div class="row"><span class="k">${banked>=0?"Banked":"Overspent by"}</span><span class="v mono">${F.durS(Math.abs(banked)*86400)}</span></div>
+    <div class="row d-alw"><span class="k">Day ${d.day_number} of 7 · allowance</span><span class="v mono">${d.allowance.toFixed(1)}%</span></div>
+    <div class="row d-used"><span class="k">${sinceLbl}</span><span class="v mono">${usedTxt}</span></div>
+    <div class="row d-left"><span class="k">Left today</span><span class="v mono" style="color:${leftCol}">${leftTxt}</span></div>
+    <div class="row d-bank"><span class="k">${banked>=0?"Banked":"Overspent by"}</span><span class="v mono">${F.durS(Math.abs(banked)*86400)}</span></div>
   </div>`;
 }
 
 function gaugeCard(key, lim, p, day){
   const u = Math.max(0, Math.min(100, lim.utilization));
-  let paceLine = "", tick = "";
+  // The pace answer gets rendered at two widths: the full sentence, and the one
+  // token still worth the space at 90px. CSS picks between them, so the narrow
+  // tiers need no separate render path and can never drift from the wide one.
+  let paceLine = "", paceMin = "", tick = "";
   if(p){
     tick = `<i style="left:${Math.max(0,Math.min(100,p.ideal_utilization))}%" title="an even spend would be here now"></i>`;
-    if(p.state === "capped")
+    if(p.state === "capped"){
       paceLine = `<span style="color:var(--bad)">At the cap</span> · resets in ${until(p.reset_epoch)}`;
-    else if(p.wait_seconds > 0)
+      paceMin  = `<span style="color:var(--bad)">at cap</span> · ${until(p.reset_epoch)}`;
+    } else if(p.wait_seconds > 0){
       paceLine = `<span style="color:var(--warn)">${p.delta.toFixed(1)}pt ahead of pace</span> — resume ${F.at(p.resume_at_epoch)} (${until(p.resume_at_epoch)})`;
-    else
+      paceMin  = `<span style="color:var(--warn)">wait ${until(p.resume_at_epoch)}</span>`;
+    } else {
       paceLine = `<span style="color:var(--good)">${F.durS(p.slack_seconds)} banked</span> · resets in ${until(p.reset_epoch)}`;
+      paceMin  = `<span style="color:var(--good)">+${F.durS(p.slack_seconds)}</span>`;
+    }
   }
-  return `<div class="card gauge">
-    <div class="top"><span class="name">${LIMIT_LABEL[key]||key}</span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
+  return `<div class="card gauge" data-key="${key}">
+    <div class="top"><span class="name"><span class="name-full">${LIMIT_LABEL[key]||key}</span><span class="name-min">${SHORT_LABEL[key]||key}</span></span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
     <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span>${tick}</div>
-    <div class="pace">${paceLine}</div>
+    <div class="pace pace-full">${paceLine}</div>
+    <div class="pace pace-min">${paceMin}</div>
     ${dayStrip(day)}
   </div>`;
 }
@@ -350,6 +493,50 @@ function renderLimits(usage, quota){
     <div class="row"><span class="k">Projected full 5h</span><span class="v mono">${F.money(b.projected_cost)}</span></div>
     <div class="row"><span class="k">Cache hit</span><span class="v mono">${cachePct}%</span></div>
     <div class="row"><span class="k">Last 7 days</span><span class="v mono">${F.money(usage.windows.week_7d.cost)} · ${F.tok(usage.windows.week_7d.tokens_total)}</span></div>`;
+  renderBurnMin(usage);
+}
+
+// The strip's burn panel. Same numbers as the wide ledger, restacked: at this
+// width a label and its value cannot share a line, and the 48-hour history is
+// worth more than the rows it replaces.
+function renderBurnMin(usage){
+  const host = el("burnMin");
+  if(!host) return;
+  const b = usage.windows.rolling_5h;
+  const tokPerH = b.tokens_total / Math.max(b.elapsed_hours, 0.05);
+  host.innerHTML = `
+    <div class="bm-lead">${F.money(b.burn_cost_per_hour)}<span class="bm-unit">/h</span></div>
+    <div class="bm-sub">${F.tok(tokPerH)} tok/h</div>
+    <div class="bm-spark" id="burnSpark"></div>
+    <div class="bm-cap" id="burnCap"></div>
+    <div class="bm-stat"><span class="bm-lbl">5h spent</span><span class="bm-val">${F.money(b.cost)} · ${F.tok(b.tokens_total)}</span></div>
+    <div class="bm-stat"><span class="bm-lbl">projected 5h</span><span class="bm-val">${F.money(b.projected_cost)}</span></div>
+    <div class="bm-stat"><span class="bm-lbl">last 7 days</span><span class="bm-val">${F.money(usage.windows.week_7d.cost)}</span></div>`;
+  renderMiniSpark(usage.hourly_48h);
+}
+
+// 48 hourly buckets with time running DOWN the column. The strip has height to
+// spend and almost no width, so the usual chart is rotated: one row per hour,
+// bar length is that hour's spend, most recent at the bottom. Across 94px, 48
+// vertical bars are 2px hairlines; as rows they get ~9px each and read fine.
+// preserveAspectRatio="none" means one viewBox unit per hour stretches to
+// whatever row height the strip can afford. No axis labels — they would not fit,
+// so the caption carries the scale and the 6-hour rules carry the structure.
+function renderMiniSpark(s){
+  const host = el("burnSpark"), cap = el("burnCap");
+  if(!host) return;
+  if(!s || !s.length){ host.innerHTML = ""; if(cap) cap.textContent = ""; return; }
+  const n = s.length, max = Math.max(1e-9, ...s.map(x => x.cost));
+  let g = "", r = "";
+  for(let i = 6; i < n; i += 6)
+    g += `<rect x="0" y="${i}" width="100" height="0.07" fill="var(--line)"/>`;
+  for(let i = 0; i < n; i++){
+    const w = (s[i].cost / max) * 100;
+    if(w <= 0) continue;                      // an idle hour is a blank row
+    r += `<rect x="0" y="${(i + 0.12).toFixed(2)}" width="${Math.max(0.9, w).toFixed(2)}" height="0.76" fill="${i >= n - 1 ? "var(--accent)" : "#3a6bd6"}"/>`;
+  }
+  host.innerHTML = `<svg viewBox="0 0 100 ${n}" preserveAspectRatio="none">${g}${r}</svg>`;
+  if(cap) cap.textContent = `48h · peak ${F.money(max)}/h`;
 }
 
 // ---- Details (unchanged accounting) ----
@@ -385,6 +572,55 @@ function renderSessions(d){ let rows="";
   for(const s of d.sessions){ rows+=`<tr><td>${s.project||"(unknown)"}</td><td><span class="swatch" style="background:${modelColor(s.model||"")}"></span>${shortModel(s.model||"")}</td><td>${F.money(s.cost)}</td><td>${F.tok(s.tokens_total)}</td><td>${F.int(s.count)}</td><td class="pill">${F.when(s.last_epoch)}</td></tr>`; }
   el("sessions").innerHTML=`<table><thead><tr><th>project</th><th>model</th><th>cost</th><th>tokens</th><th>reqs</th><th>last</th></tr></thead><tbody>${rows||'<tr><td colspan=6 class=pill>No recent sessions.</td></tr>'}</tbody></table>`; }
 
+// No-scrollbar backstop. The collapse tiers are built to fit a full-height
+// strip, but a short screen — or a "resume Thu 3:40 PM" that wraps — can still
+// push past the viewport. Step down two extra density levels rather than let a
+// scrollbar appear in a 90px-wide window.
+const SQUEEZE = ["squeeze-1", "squeeze-2"];
+// Only the collapsed tiers trade content for a scrollbar. At the default
+// 480x900 the full page is ~990px tall, and dropping the burn ledger to save
+// 90px of scrolling is a bad trade — above this width, let it scroll.
+const SQUEEZE_MAX_W = 440;
+function fitToViewport(){
+  const r = document.documentElement, wrap = document.querySelector(".wrap");
+  if(!wrap) return;
+  SQUEEZE.forEach(c => r.classList.remove(c));
+  r.classList.remove("allow-scroll");
+  if(window.innerWidth >= SQUEEZE_MAX_W) return;
+  // Measure the content box. documentElement.scrollHeight is useless here —
+  // the strip tiers set overflow:hidden, which clamps it to the viewport and
+  // reports a comfortable fit while the last card is being cut in half.
+  const tooTall = () => wrap.getBoundingClientRect().bottom > window.innerHeight + 1;
+  for(const c of SQUEEZE){
+    if(!tooTall()) return;
+    r.classList.add(c);
+  }
+  if(tooTall()) r.classList.add("allow-scroll");
+}
+
+// A docked strip is mostly empty below the gauges, so the burn history takes
+// whatever is left rather than sitting at a fixed size. Capped so 48 rows stay
+// around 10px each — past that the chart is just tall, not more legible.
+const SPARK_BASE = 70, SPARK_MAX = 520;
+function fillSpark(){
+  const host = el("burnSpark");
+  if(!host || !host.offsetParent) return;          // card hidden — nothing to fill
+  if(window.innerWidth >= SQUEEZE_MAX_W) return;   // wide layout scrolls; leave it alone
+  const leftover = window.innerHeight - document.querySelector(".wrap").getBoundingClientRect().bottom;
+  if(leftover > 10)
+    host.style.height = Math.min(SPARK_MAX, SPARK_BASE + leftover - 8) + "px";
+}
+
+// One layout pass: reset the flexible bit to a known size, settle the density
+// against that, then spend what is left. Order matters — measuring a spark that
+// is still holding last pass's height makes fitToViewport() squeeze for nothing.
+function relayout(){
+  const host = el("burnSpark");
+  if(host) host.style.height = SPARK_BASE + "px";
+  fitToViewport();
+  fillSpark();
+}
+
 async function tick(){
   try {
     const [usage, quota] = await Promise.all([
@@ -399,9 +635,11 @@ async function tick(){
     el("dot").className = "dot" + (usage.active.active ? " live" : "");
     el("clock").textContent = "updated " + new Date().toLocaleTimeString();
   } catch(e){ el("clock").textContent = "offline"; el("dot").className="dot"; }
+  relayout();        // outside the try: the offline layout has to fit too
 }
 tick(); setInterval(tick, 5000);
 setInterval(paintCountdowns, 1000);
+addEventListener("resize", () => requestAnimationFrame(relayout));
 </script>
 </body>
 </html>

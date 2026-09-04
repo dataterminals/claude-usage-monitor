@@ -60,7 +60,7 @@ missing dependency or a crash in a message box plus a log under
 
 Recreate the shortcuts on another machine with:
 ```powershell
-$repo = "D:\Github Repositories\claude-usage-monitor"
+$repo = "H:\Github Repositories\claude-usage-monitor"
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude Usage Monitor.lnk'))
 $sc.TargetPath = (Get-Command pythonw).Source
@@ -82,7 +82,7 @@ fresh checkout has no `dist\`; build it yourself (below).
 
 **D) From source:**
 ```powershell
-cd "D:\Github Repositories\claude-usage-monitor"
+cd "H:\Github Repositories\claude-usage-monitor"
 pip install -r requirements.txt
 pythonw run.pyw          # tray + native window, no console, no launcher guards
 # or:  python serve.py   # dashboard API only, no tray/window, stdlib only -> http://127.0.0.1:8787/
@@ -97,7 +97,7 @@ and *Open dashboard* just uses your default browser.
 The `.spec` file bundles the dashboard, icons, and the pywebview backends. Use it:
 
 ```powershell
-cd "D:\Github Repositories\claude-usage-monitor"
+cd "H:\Github Repositories\claude-usage-monitor"
 pip install pyinstaller
 python -m PyInstaller ClaudeUsageMonitor.spec --noconfirm
 # -> dist\ClaudeUsageMonitor.exe
@@ -105,6 +105,55 @@ python -m PyInstaller ClaudeUsageMonitor.spec --noconfirm
 
 If you regenerate the app icon, re-run `python make_icons.py` first (writes
 `icons\app.ico` + `icons\icon-256.png`).
+
+## Collapsing it to a strip
+
+The window is built to survive being dragged narrow and parked against a screen
+edge, full height. Width is the scarce axis (the height is a whole monitor), so
+`dashboard.html` collapses in tiers, each dropping the least load-bearing thing
+and re-flowing what is left. The **5-hour window, the week, and the pacing
+answer are visible in every tier** — that is the invariant.
+
+| width | what changes |
+| --- | --- |
+| >= 440px | everything: explainers, hero verdict, day strip, local-burn ledger |
+| < 440px | *slim* — explainer prose and the model count go; the numbers stay full size |
+| < 300px | *strip* — tabs and title go; labels shorten to `5H` / `WEEK`; the per-model sub-limits drop; the pace line becomes one token (`+1h 35m`, `wait 12m`, `at cap - 40m`); the pacing reason clamps to three lines; the burn ledger restacks into the burn panel (below) |
+| < 170px | *sliver* — the hero verdict and the day strip go |
+| < 140px | *edge* — the label stacks above the percentage; the clock goes |
+
+Below 440px the page is pinned to the viewport and **does not scroll** — that is
+the whole point of the tiers. `fitToViewport()` is the backstop: if a short
+screen still overflows, it steps down two further density levels, and only if
+*that* fails does it allow scrolling, rather than silently clipping the bottom
+card. Above 440px nothing is hidden and the page scrolls as before, because
+dropping the ledger to save 90px of scrolling is a bad trade at full size.
+
+### The burn panel
+
+Docked full-height, the strip runs out of things to say long before it runs out
+of screen, so the space under the gauges goes to burn tracking: live `$/h` and
+`tok/h`, then the 48-hour history, then 5h spent, projected 5h, and the 7-day
+total. Same numbers as the wide ledger, restacked label-over-value because at
+110px a label and its number cannot share a line.
+
+The history chart is **rotated** — one row per hour running down the column,
+bar length is that hour's spend, most recent at the bottom in the accent colour,
+with a faint rule every 6 hours. Across 94px of width, 48 vertical bars are 2px
+hairlines; as rows they get ~10px each and read as an actual timeline. Idle
+hours are blank rows, so a quiet night looks quiet.
+
+The chart takes the leftover height rather than a fixed slot (`fillSpark()`),
+capped so rows stay around 10px — past that it is just tall, not more legible.
+`relayout()` runs the whole pass in order: reset the chart to its base height,
+settle the density against that, then spend what is left. Measuring a chart that
+still holds the last pass's height makes the fit backstop squeeze for nothing.
+
+The panel is the first thing `squeeze-1` drops, so on a short window the gauges
+and the pacing answer still win.
+
+The window minimum is `72 x 240` (`_MIN` in `window.py`), far below anything the
+full layout would tolerate: the CSS decides what still fits, not the window.
 
 ## Pacing
 
