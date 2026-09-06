@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 *.spec
+# ...except the checked-in build recipe; PyInstaller generates the rest.
+!ClaudeUsageMonitor.spec
