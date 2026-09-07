@@ -43,10 +43,60 @@ _TITLE = "Claude Usage"
 _WIDTH = 480
 _HEIGHT = 900
 _BG = "#0e1014"          # matches dashboard --bg so there's no white flash
-# dashboard.html collapses in tiers down to a ~72px sliver (short label, %,
-# bar, and the pacing countdown), so the floor sits far below anything the full
-# layout would tolerate — the CSS, not this tuple, decides what still fits.
+# Deliberately below anything the full layout tolerates, so hand-dragging is
+# governed by the CSS tiers rather than by this tuple. Note it is NOT the real
+# floor: Windows refuses to shrink a captioned, resizable window past roughly
+# 136px wide (the caption buttons set that limit), and a resize() asking for
+# less is silently clamped up to it. Measured, not assumed — resize(110, 800)
+# comes back as 136 while resize(400, 600) is exact, so it is a width clamp and
+# not DPI scaling.
 _MIN = (72, 240)
+
+# Docked-strip width, and the narrowest a captioned window actually gets here
+# (see _MIN): asking for less just gets clamped to about this. It still falls
+# inside the dashboard's <140px "edge" tier, so docking lands on the densest
+# layout — label over percentage, bar, and the rollover clock.
+_DOCK_W = 136
+
+
+def _work_area(x=0, y=0):
+    """The taskbar-excluded rect of the monitor containing (x, y).
+
+    Returns (left, top, width, height), or None if the Win32 call is
+    unavailable. Point-based rather than primary-only so docking on a left- or
+    right-hand screen lands on that screen; rcWork rather than rcMonitor so the
+    strip's foot stops at the taskbar instead of hiding behind it.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:                      # pragma: no cover - non-Windows
+        return None
+
+    class _MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD)]
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.restype = wintypes.HANDLE
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MONITORINFO)]
+
+        MONITOR_DEFAULTTONEAREST = 2
+        hmon = user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)),
+                                       MONITOR_DEFAULTTONEAREST)
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return None
+        r = mi.rcWork
+        return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def _nudge_to_front(win):
@@ -80,6 +130,7 @@ class DashboardWindow:
         self._window = None
         self._started = threading.Event()
         self._quitting = False
+        self._undock = None         # geometry from before the last dock_left()
 
     # ---- close interception: hide instead of destroy ----
     def _on_closing(self):
@@ -136,6 +187,53 @@ class DashboardWindow:
             return
         try:
             win.show()
+            _nudge_to_front(win)
+        except Exception:
+            pass
+
+    # ---- docking ----
+    def dock_left(self):
+        """Snap the window to the left edge of its monitor as a full-height strip.
+
+        Whichever monitor it is currently on — docking is meant to put the strip
+        where you are looking, not always on the primary.
+        """
+        win = self._window
+        if win is None:
+            return
+        try:
+            win.show()
+            try:
+                here = (win.x, win.y)
+            except Exception:
+                here = (0, 0)               # no geometry -> nearest to the origin
+            area = _work_area(*here)
+            if area is None:
+                return
+            left, top, _w, height = area
+            if self._undock is None:        # remember the pre-dock geometry once,
+                try:                        # so repeated docks don't overwrite it
+                    self._undock = (win.x, win.y, win.width, win.height)
+                except Exception:
+                    self._undock = (None, None, _WIDTH, _HEIGHT)
+            win.resize(_DOCK_W, height)
+            win.move(left, top)
+            _nudge_to_front(win)
+        except Exception:
+            pass
+
+    def restore_size(self):
+        """Undo a dock: back to the pre-dock geometry, or the default if unknown."""
+        win = self._window
+        if win is None:
+            return
+        try:
+            win.show()
+            x, y, w, h = self._undock or (None, None, _WIDTH, _HEIGHT)
+            win.resize(max(int(w), _MIN[0]), max(int(h), _MIN[1]))
+            if x is not None:
+                win.move(int(x), int(y))
+            self._undock = None
             _nudge_to_front(win)
         except Exception:
             pass

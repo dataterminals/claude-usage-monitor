@@ -271,6 +271,16 @@ class App:
                 pass
         webbrowser.open(self.url)
 
+    def dock_left(self, *_):
+        # Only meaningful with the native window; the browser fallback has no
+        # geometry we control, which is why the menu items disable themselves.
+        if self.window is not None:
+            self.window.dock_left()
+
+    def restore_window(self, *_):
+        if self.window is not None:
+            self.window.restore_size()
+
     def toggle_quota(self, icon, item):
         self.quota_enabled = not self.quota_enabled
         self._dirty.set()
@@ -465,6 +475,10 @@ def start_watcher(app):
 def build_menu(app):
     return pystray.Menu(
         pystray.MenuItem("Open dashboard", app.open_dashboard, default=True),
+        pystray.MenuItem("Dock left (narrow strip)", app.dock_left,
+                         enabled=lambda item: app.window is not None),
+        pystray.MenuItem("Restore window size", app.restore_window,
+                         enabled=lambda item: app.window is not None),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(app.lbl_5h, None, enabled=False),
         pystray.MenuItem(app.lbl_week, None, enabled=False),

@@ -129,6 +129,17 @@ screen still overflows, it steps down two further density levels, and only if
 card. Above 440px nothing is hidden and the page scrolls as before, because
 dropping the ledger to save 90px of scrolling is a bad trade at full size.
 
+### Docking it there
+
+The tray has **Dock left (narrow strip)** and **Restore window size**. Docking
+snaps the window to the left edge of whichever monitor it is currently on — not
+always the primary — at 110px wide and the full height of that monitor's *work
+area*, so its foot stops at the taskbar rather than hiding behind it. Restore
+puts back the geometry from before the dock, or 480x900 if it never had one.
+
+Both items disable themselves when pywebview is unavailable and the dashboard is
+falling back to a browser tab, where there is no window geometry to set.
+
 ### The rollover time
 
 Every gauge carries the clock time its window rolls over — `Rolls over 2:00 AM ·
@@ -165,8 +176,16 @@ still holds the last pass's height makes the fit backstop squeeze for nothing.
 The panel is the first thing `squeeze-1` drops, so on a short window the gauges
 and the pacing answer still win.
 
-The window minimum is `72 x 240` (`_MIN` in `window.py`), far below anything the
-full layout would tolerate: the CSS decides what still fits, not the window.
+`_MIN` in `window.py` is `72 x 240`, deliberately below anything the full layout
+tolerates so that hand-dragging is governed by the CSS tiers. It is not the real
+floor, though: **Windows will not shrink a captioned, resizable window below
+about 136px wide** — the caption buttons set that limit, and a narrower
+`resize()` is silently clamped up to it (measured: `resize(110, 800)` returns
+136, while `resize(400, 600)` is exact, so it is a width clamp, not DPI).
+
+136px still lands inside the `< 140px` edge tier, so the densest layout is
+reachable in the real window. The tiers below it only come into play if the
+window ever goes frameless, or in a browser tab, where nothing clamps.
 
 ## Pacing
 
