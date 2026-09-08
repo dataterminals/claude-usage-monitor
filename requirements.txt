@@ -5,3 +5,10 @@ watchdog>=3
 # Optional at runtime: if it's missing, the app falls back to opening the
 # dashboard in the default browser.
 pywebview>=5
+# CA bundle for the token refresh. Python's default SSL context loads the
+# Windows cert store, expired intermediates and all, and a stale ISRG Root X2
+# cached there is enough to kill every request to platform.claude.com while
+# leaving api.anthropic.com (a different CA) working — which is precisely the
+# failure that made "Attempt token refresh" look like a no-op. Optional:
+# quota.py falls back to the default context when it isn't installed.
+certifi

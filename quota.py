@@ -26,6 +26,7 @@ degrade gracefully to {available: false}; it never raises to the caller.
 import json
 import os
 import shutil
+import ssl
 import threading
 import time
 import urllib.error
@@ -50,6 +51,43 @@ BETA = "oauth-2025-04-20"
 
 _lock = threading.RLock()
 _cache = {"epoch": 0.0, "data": None, "ttl": 0.0, "creds_mtime": None}
+
+# Why we don't trust the Windows certificate store for this.
+#
+# The two endpoints sit behind different CAs: api.anthropic.com chains through
+# Google Trust Services, platform.claude.com through Let's Encrypt
+# (leaf -> E7 -> ISRG Root X1). Python's ssl.create_default_context() calls
+# load_default_certs(), which pulls every cert Windows has cached in
+# CurrentUser\CA in as a *trust anchor* — expired ones included. This machine
+# had an ISRG Root X2 there that expired 2025-09-15, so OpenSSL anchored on it
+# and aborted the Let's Encrypt chain with "certificate has expired". The usage
+# GET kept working and every single refresh POST died before a byte went out,
+# which is exactly the shape of the bug this module spent months not finding:
+# the request was never sent, so the refresh token was never spent, so
+# _write_creds() never ran and .credentials.json.bak was never created.
+#
+# Measured: with the system store, platform.claude.com and console.anthropic.com
+# both fail "certificate has expired" while api.anthropic.com is fine; with
+# certifi's bundle all three negotiate TLSv1.3. Claude Code itself never had the
+# problem because Bun ships its own roots rather than reading the Windows store.
+#
+# certifi is optional — without it we fall back to the default context and are
+# no worse off than before.
+_ssl_ctx = None
+
+
+def _context():
+    """A verifying SSL context that doesn't inherit the Windows store's stale
+    intermediates. Built once; falls back to the default on any failure."""
+    global _ssl_ctx
+    if _ssl_ctx is None:
+        try:
+            import certifi
+            _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            _ssl_ctx = ssl.create_default_context()
+    return _ssl_ctx
+
 
 _TTL_OK = 45.0      # re-fetch a good result at most this often
 _TTL_NET = 10.0     # transient (DNS/socket): the network is usually just not up
@@ -127,7 +165,7 @@ def _refresh(oauth):
         "User-Agent": USER_AGENT,
     })
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=_context()) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise RefreshError(_http_detail(exc)) from exc
@@ -146,6 +184,19 @@ def _refresh(oauth):
     for k in ("accessToken", "refreshToken", "expiresAt"):
         if data.get(k) is not None:
             updated[k] = data[k]
+    # The endpoint answers with expires_in — seconds from now — and not with any
+    # absolute expires_at, so the loops above find nothing and expiresAt keeps
+    # the value it already had. Left alone that is a slow-motion disaster once
+    # the TLS fix lets a refresh through: the stale expiresAt is in the past,
+    # _expired() stays true, and every poll refreshes again, rotating the one
+    # refresh token every 45 seconds until a rotation lands mid-flight against
+    # Claude Code's and the grant is invalidated for both of us. Claude Code
+    # 2.1.250 does the same arithmetic (Date.now() + expires_in * 1000).
+    for src, dst in (("expires_in", "expiresAt"),
+                     ("refresh_token_expires_in", "refreshTokenExpiresAt")):
+        secs = data.get(src)
+        if isinstance(secs, (int, float)) and not isinstance(secs, bool) and secs > 0:
+            updated[dst] = int(time.time() * 1000 + secs * 1000)
     scope = data.get("scope")
     if isinstance(scope, str) and scope:
         updated["scopes"] = scope.split()
@@ -175,7 +226,7 @@ def _call(token):
         "Content-Type": "application/json",
         "User-Agent": USER_AGENT,
     })
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with urllib.request.urlopen(req, timeout=8, context=_context()) as resp:
         return json.loads(resp.read())
 
 
