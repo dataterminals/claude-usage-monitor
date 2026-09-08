@@ -35,6 +35,12 @@ hiddenimports += [
     "webview.platforms.winforms",
     "pystray._win32",
     "clr",
+    # quota.py imports certifi inside _context(), so name it rather than trust
+    # the graph to follow a function-local import. PyInstaller's bundled
+    # hook-certifi ships cacert.pem with it; without that the frozen build falls
+    # back to the Windows store and the refresh POST goes back to dying on an
+    # expired root.
+    "certifi",
 ]
 
 # Backends for other platforms/toolkits. pywebview probes for these in a
