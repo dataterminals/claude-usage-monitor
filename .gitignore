@@ -3,6 +3,7 @@ __pycache__/
 
 # PyInstaller build artifacts
 build/
+build_new/
 dist/
 *.spec
 # ...except the checked-in build recipe; PyInstaller generates the rest.
