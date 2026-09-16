@@ -5,6 +5,7 @@ Max/Pro subscription (equivalent-API dollars) — an intensity gauge, not a bill
 """
 import json
 import os
+import re
 import sys
 
 # When frozen by PyInstaller, bundled data files live under sys._MEIPASS.
@@ -20,9 +21,24 @@ _DEFAULT = RATES.get("_default", {
 })
 
 
+# Transcripts carry whatever id the request used, and some are dated —
+# `claude-haiku-4-5-20251001` next to a bare `claude-sonnet-5`. An exact-match
+# lookup misses the dated one and silently bills it at _default's Opus rates,
+# which is what made Haiku read 5x its real cost. Strip the suffix and retry.
+_DATED = re.compile(r"-\d{8}$")
+
+
 def rates_for(model):
-    """Return the rate dict for a model, falling back to _default."""
-    return RATES.get(model, _DEFAULT)
+    """Return the rate dict for a model, falling back to _default.
+
+    Matches the id exactly, then with a trailing -YYYYMMDD removed.
+    """
+    if not isinstance(model, str):
+        return _DEFAULT
+    r = RATES.get(model)
+    if not isinstance(r, dict):
+        r = RATES.get(_DATED.sub("", model))
+    return r if isinstance(r, dict) else _DEFAULT
 
 
 def cost_for_record(model, tokens):

@@ -60,6 +60,33 @@ _KEEP_SECONDS = 8 * 86400      # a little more than the weekly window
 _MAX_SAMPLES = 4000
 _MIN_SAMPLE_GAP = 300.0        # re-record an unchanged reading at most this often
 
+# A weekly bar cannot fall inside its own window — it only drops at the reset,
+# which starts a new generation. So a drop with the generation unchanged means
+# the *denominator* moved, not the numerator: a plan change (Max 5x -> 20x)
+# rebases every bar downward mid-window. See SampleStore._rebased.
+_REBASE_DROP = 0.5
+
+
+def window_hours(key):
+    """Length of the window a limits key names, or None if it isn't one.
+
+    Resolved by prefix rather than from an exhaustive table: the endpoint now
+    names model-scoped weekly caps at runtime (`seven_day_scoped_fable`), and a
+    fixed table silently dropped every key it had not been taught — which is
+    how the only per-model cap still reported went missing from both the gauges
+    and the wait driver.
+    """
+    hours = WINDOW_HOURS.get(key)
+    if hours is not None:
+        return hours
+    if not isinstance(key, str):
+        return None
+    if key == "five_hour" or key.startswith("five_hour_"):
+        return 5.0
+    if key == "seven_day" or key.startswith("seven_day_"):
+        return 168.0
+    return None
+
 
 def _anchor(iso):
     """A window's `resets_at` as a stable epoch, rounded to the nearest minute.
@@ -87,6 +114,20 @@ def _anchor(iso):
     except (AttributeError, ValueError, TypeError):
         return None
     return float(int((e + 30) // 60) * 60)
+
+
+def five_hour_start(limits):
+    """Epoch the current 5-hour block opened, or None when none is open.
+
+    The endpoint reports only `resets_at`; the block is fixed, so its start is
+    the reset less the window length. The engine uses this to anchor its own
+    5-hour view to the same instant the gauge is measuring.
+    """
+    lim = (limits or {}).get("five_hour")
+    if not isinstance(lim, dict):
+        return None
+    reset_e = _anchor(lim.get("resets_at"))
+    return None if reset_e is None else reset_e - WINDOW_HOURS["five_hour"] * 3600.0
 
 
 def _app_dir():
@@ -137,12 +178,39 @@ class SampleStore:
             pass  # history is a nice-to-have; never break the caller
 
     # ---- write ----
+    @staticmethod
+    def _rebased(samples, gen, utils):
+        """True when this weekly reading sits below one already in `gen`.
+
+        Utilization is monotone inside a fixed window, so the only way it falls
+        without the generation changing is that the *plan* changed underneath
+        it — a Max 5x -> 20x upgrade rebases every bar downward mid-window while
+        `resets_at`, and therefore the generation marker, stays put.
+
+        Left alone those pre-upgrade samples keep serving as today's baseline,
+        and since `used_today` clamps at zero it then reports a confident 0.0
+        used with the full allowance still free — flagged *exact*, because a
+        sample really does exist at the day boundary. Dropping the generation's
+        history instead costs one day of "since HH:MM" partial reporting, which
+        is the honest answer while a fresh baseline builds.
+
+        Compared against the generation's maximum, not its last sample, so a
+        reading that already landed post-rebase can't mask the discontinuity.
+        """
+        u = utils.get("seven_day")
+        if u is None:
+            return False
+        prior = [s["u"]["seven_day"] for s in samples
+                 if s.get("w") == gen and "seven_day" in (s.get("u") or {})]
+        return bool(prior) and (max(prior) - u) > _REBASE_DROP
+
     def record(self, limits, now=None):
         """Record one reading. Cheap no-op when nothing has changed."""
         now = now or time.time()
         utils = {}
-        for key in WINDOW_HOURS:
-            v = limits.get(key)
+        for key, v in (limits or {}).items():
+            if window_hours(key) is None:
+                continue
             if isinstance(v, dict) and v.get("utilization") is not None:
                 utils[key] = float(v["utilization"])
         if not utils:
@@ -151,7 +219,11 @@ class SampleStore:
         gen = _anchor(week.get("resets_at"))
 
         samples = self.load()
-        last = samples[-1] if samples else None
+        if self._rebased(samples, gen, utils):
+            samples = [s for s in samples if s.get("w") != gen]
+            last = None
+        else:
+            last = samples[-1] if samples else None
         if (last is not None
                 and last.get("w") == gen
                 and last.get("u") == utils
@@ -190,9 +262,9 @@ class SampleStore:
 def _window(key, lim, now, ceiling):
     util = lim.get("utilization")
     reset_e = _anchor(lim.get("resets_at"))
-    if util is None or reset_e is None:
+    hours = window_hours(key)
+    if util is None or reset_e is None or hours is None:
         return None
-    hours = WINDOW_HOURS[key]
     span = hours * 3600.0
     start_e = reset_e - span
 
@@ -216,7 +288,9 @@ def _window(key, lim, now, ceiling):
 
     return {
         "key": key,
-        "label": LABELS.get(key, key),
+        # A scoped cap carries its own label from quota._scoped — the endpoint
+        # names the model at runtime, so there is no static entry to look up.
+        "label": lim.get("label") or LABELS.get(key, key),
         "window_hours": hours,
         "utilization": util,
         "start_epoch": start_e,
@@ -235,17 +309,35 @@ def _window(key, lim, now, ceiling):
 def _weekly_day(w, store, now, ceiling):
     """Day-level view of the weekly window, phased off its own reset anchor."""
     span = w["window_hours"] * 3600.0
-    idx = min(int((now - w["start_epoch"]) // 86400), 6)
+    # Clamped at both ends. The 6 stops a leap-second-ish overshoot inventing an
+    # eighth day; the 0 covers `now` landing before the window start, which a
+    # bare floor-divide turns into index -1 and a negative day budget.
+    idx = min(max(int((now - w["start_epoch"]) // 86400), 0), 6)
     day_start = w["start_epoch"] + idx * 86400.0
     allowance = ceiling / 7.0
 
     used = baseline_e = None
     exact = False
-    if store is not None:
+    if idx == 0:
+        # Day 0's boundary *is* the window start, where utilization is zero by
+        # definition — so everything spent this week was spent today and no
+        # history is needed. Asking the store instead understated day one
+        # whenever the history didn't reach back that far: it would answer with
+        # the earliest sample it had and report the remainder "since 23:41".
+        used, baseline_e, exact = w["utilization"], day_start, True
+    elif store is not None:
         base_util, baseline_e, exact = store.baseline(
             "seven_day", day_start, w["reset_epoch"])
         if base_util is not None:
-            used = max(0.0, w["utilization"] - base_util)
+            if base_util > w["utilization"]:
+                # Baseline above today's reading: history written before a plan
+                # change that SampleStore._rebased hadn't yet been taught to
+                # prune. Clamping would print a confident 0.0 used; unknown is
+                # the truthful answer until a post-change baseline exists.
+                used = baseline_e = None
+                exact = False
+            else:
+                used = w["utilization"] - base_util
 
     return {
         "day_index": idx,                       # 0..6 within the week
@@ -276,7 +368,9 @@ def compute(limits, now=None, store=None, ceiling=DEFAULT_CEILING):
     ceiling = float(ceiling) or DEFAULT_CEILING
 
     windows = {}
-    for key in WINDOW_HOURS:
+    # Driven by what the endpoint actually returned, not by a fixed key list —
+    # scoped weekly caps are named at runtime and would otherwise never appear.
+    for key in sorted(limits):
         lim = limits.get(key)
         if isinstance(lim, dict):
             w = _window(key, lim, now, ceiling)

@@ -169,7 +169,8 @@
     .grid { gap:8px; }
     .hero { font-size:12.5px; line-height:1.4; }
     /* The per-model sub-limits are a luxury here; all-models is what binds. */
-    .gauge[data-key="seven_day_opus"], .gauge[data-key="seven_day_sonnet"] { display:none; }
+    .gauge[data-key="seven_day_opus"], .gauge[data-key="seven_day_sonnet"],
+    .gauge[data-key^="seven_day_scoped_"] { display:none; }
     .name-full { display:none; }  .name-min { display:inline; }
     .pace-full { display:none; }  .pace-min { display:block; }
     .reset-full { display:none; }  .reset-min { display:block; }
@@ -227,7 +228,8 @@
   .squeeze-1 .gauge .day .row:not(.d-left) { display:none; }
   .squeeze-2 .gauge .day, .squeeze-2 .tabs, .squeeze-2 #heroCard { display:none; }
   .squeeze-2 .gauge[data-key="seven_day_opus"],
-  .squeeze-2 .gauge[data-key="seven_day_sonnet"] { display:none; }
+  .squeeze-2 .gauge[data-key="seven_day_sonnet"],
+  .squeeze-2 .gauge[data-key^="seven_day_scoped_"] { display:none; }
   .squeeze-2 .pace-full { display:none; }  .squeeze-2 .pace-min { display:block; }
   /* the rollover is the one line that never gets squeezed away */
   .squeeze-1 .reset-full, .squeeze-2 .reset-full { display:none; }
@@ -330,6 +332,24 @@ const LIMIT_LABEL = { five_hour:"5-hour session", seven_day:"This week · all mo
 // Same four windows, named for a card that is 90px wide.
 const SHORT_LABEL = { five_hour:"5H", seven_day:"WEEK",
                       seven_day_opus:"OPUS", seven_day_sonnet:"SONNET" };
+// The endpoint names model-scoped weekly caps at runtime — seven_day_scoped_fable
+// — so the render order is built per snapshot. Anything the normalizer produced
+// that ORDER doesn't know is a scoped cap and sorts after the fixed ones; it
+// carries its own `label`, which is why the lookups below prefer it.
+function limitOrder(L){
+  return ORDER.concat(Object.keys(L||{}).filter(k => !ORDER.includes(k)).sort());
+}
+function limitLabel(key, lim){
+  if(lim && lim.label) return lim.label;
+  if(LIMIT_LABEL[key]) return LIMIT_LABEL[key];
+  const m = /^seven_day_scoped_(.+)$/.exec(key);
+  return m ? `This week · ${m[1].replace(/_/g," ")}` : key;
+}
+function limitShort(key, lim){
+  if(SHORT_LABEL[key]) return SHORT_LABEL[key];
+  const m = /^seven_day_scoped_(.+)$/.exec(key);
+  return (m ? m[1].replace(/_/g," ") : key).toUpperCase();
+}
 const FRESH_WINDOW_S = 1800;   // resume this close to a reset -> just take the fresh window
 
 // Countdowns repaint every second off a fixed target epoch, so they tick
@@ -451,7 +471,7 @@ function gaugeCard(key, lim, p, day){
   const resetFull = resetAt ? `Rolls over <b>${F.at(resetAt)}</b> · ${until(resetAt)}` : "";
   const resetMin  = resetAt ? `↻ ${F.at(resetAt)}` : "";
   return `<div class="card gauge" data-key="${key}">
-    <div class="top"><span class="name"><span class="name-full">${LIMIT_LABEL[key]||key}</span><span class="name-min">${SHORT_LABEL[key]||key}</span></span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
+    <div class="top"><span class="name"><span class="name-full">${limitLabel(key, lim)}</span><span class="name-min">${limitShort(key, lim)}</span></span><span class="pct" style="color:${color(u)}">${Math.floor(lim.utilization)}%</span></div>
     <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span>${tick}</div>
     <div class="pace pace-full">${paceLine}</div>
     <div class="pace pace-min">${paceMin}</div>
@@ -494,7 +514,7 @@ function renderLimits(usage, quota){
     el("rollover").textContent = fiveReset ? `↻ 5h ${F.at(fiveReset)}` : "";
     // hero = the tightest limit
     let worst=null, worstKey=null;
-    for(const k of ORDER){ const v=L[k];
+    for(const k of limitOrder(L)){ const v=L[k];
       if(v && v.utilization!=null && (worst==null || v.utilization>worst.utilization)){ worst=v; worstKey=k; } }
     if(worst){
       const five = W.five_hour;
@@ -505,7 +525,7 @@ function renderLimits(usage, quota){
       else if(P.wait_seconds > 0){ cls="verdict-warn";
         verb=`The 5-hour window is fine, but you're ${F.durS(P.wait_seconds)} ahead of the weekly line.`; }
       el("hero").className = "hero "+cls;
-      el("hero").innerHTML = `Tightest cap: <b>${LIMIT_LABEL[worstKey]}</b> at <b>${Math.floor(worst.utilization)}%</b>. ${verb}`;
+      el("hero").innerHTML = `Tightest cap: <b>${limitLabel(worstKey, worst)}</b> at <b>${Math.floor(worst.utilization)}%</b>. ${verb}`;
     } else {
       // Connected, but the endpoint reports no open window. Nothing is wrong:
       // a 5-hour block only exists once you spend tokens in it.
@@ -514,7 +534,7 @@ function renderLimits(usage, quota){
     }
     renderPacer(P);
     let cards="";
-    for(const k of ORDER){ const v=L[k]; if(v && v.utilization!=null)
+    for(const k of limitOrder(L)){ const v=L[k]; if(v && v.utilization!=null)
       cards += gaugeCard(k, v, W[k], k==="seven_day" ? P.weekly_day : null); }
     host.innerHTML = `<div class="grid gauges">${cards}</div>`;
     if(quota.warning) host.innerHTML += `<div class="pill" style="color:var(--warn);margin-top:8px">${quota.warning}</div>`;
@@ -522,8 +542,8 @@ function renderLimits(usage, quota){
 
   const cachePct = (()=>{ const t=b.input+b.cache_read+b.cache_write_5m+b.cache_write_1h; return t?Math.round(100*b.cache_read/t):0; })();
   el("localBurn").innerHTML = `
-    <div class="row"><span class="k">Rolling 5h — tokens</span><span class="v mono">${F.tok(b.tokens_total)}</span></div>
-    <div class="row"><span class="k">Rolling 5h — notional cost</span><span class="v mono">${F.money(b.cost)}</span></div>
+    <div class="row"><span class="k">${b.label} — tokens</span><span class="v mono">${F.tok(b.tokens_total)}</span></div>
+    <div class="row"><span class="k">${b.label} — notional cost</span><span class="v mono">${F.money(b.cost)}</span></div>
     <div class="row"><span class="k">Burn rate</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(b.tokens_total/Math.max(b.elapsed_hours,0.05))}/h</span></div>
     <div class="row"><span class="k">Projected full 5h</span><span class="v mono">${F.money(b.projected_cost)}</span></div>
     <div class="row"><span class="k">Cache hit</span><span class="v mono">${cachePct}%</span></div>

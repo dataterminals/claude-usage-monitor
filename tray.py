@@ -217,15 +217,22 @@ class App:
         state = self._quota_state()
         if state:
             return "Weekly limit:  — ({})".format(state)
+        lims = self._limits()
         u = self._util("seven_day")
-        uo = self._util("seven_day_opus")
-        if u is None and uo is None:
+        parts = ["all {}%".format(int(u))] if u is not None else []
+        # Per-model caps are named at runtime now (seven_day_scoped_fable), and
+        # the two keys this used to hardcode both read null on a current plan —
+        # so walk whatever weekly windows came back instead of naming them.
+        for key in sorted(lims):
+            v = lims.get(key)
+            if key == "seven_day" or not key.startswith("seven_day"):
+                continue
+            if not isinstance(v, dict) or v.get("utilization") is None:
+                continue
+            name = (v.get("label") or pacing.LABELS.get(key, key)).split("·")[-1].strip()
+            parts.append("{} {}%".format(name, int(v["utilization"])))
+        if not parts:
             return "Weekly limit:  —"
-        parts = []
-        if u is not None:
-            parts.append("all {}%".format(int(u)))
-        if uo is not None:
-            parts.append("Opus {}%".format(int(uo)))
         return "Weekly limit:  " + " · ".join(parts)
 
     def lbl_pace(self, item=None):
@@ -354,7 +361,9 @@ class App:
 
     def _tick(self):
         self.engine.refresh()
-        self.snap = self.engine.snapshot()
+        # Quota first: the snapshot wants this tick's 5-hour block start so its
+        # burn window lines up with the gauge instead of trailing five hours
+        # back into the previous block.
         if self.quota_enabled:
             try:
                 self.quota = quota.fetch(allow_refresh=self.auto_refresh)
@@ -364,6 +373,8 @@ class App:
         else:
             self.quota = {}
             self.pace = {}
+        self.snap = self.engine.snapshot(
+            five_hour_start=pacing.five_hour_start(self._limits()))
         self._update_icon()
         self._update_menu()
         now = time.monotonic()

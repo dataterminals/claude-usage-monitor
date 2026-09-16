@@ -9,7 +9,16 @@ reverse-engineered from the installed Claude Code binary.
     anthropic-beta: oauth-2025-04-20
 
 Response: { five_hour, seven_day, seven_day_sonnet, seven_day_opus }, each a
-{ "utilization": 0-100, "resets_at": ISO8601|null } (or absent/null).
+{ "utilization": 0-100, "resets_at": ISO8601|null } (or absent/null), plus a
+`limits` array that is the newer shape for the same thing. The two flat weekly
+per-model keys read null on a current Max plan; the model-scoped cap now lives
+in that array as {kind: "weekly_scoped", scope: {model: {display_name}}, ...},
+so _normalize() reads both and emits `seven_day_scoped_<model>` for the latter.
+
+The response carries more than this module surfaces — `extra_usage`/`spend`
+(overage credits), `seven_day_breakdown` (which surface spent the week), and
+several codenamed windows. `raw` is returned untouched so a caller can reach
+them without another round trip.
 
 READ-ONLY BY DEFAULT: this only reads your credentials and never writes them
 unless the caller passes allow_refresh=True. A token refresh rotates the
@@ -210,12 +219,66 @@ def _expired(oauth, now, skew=300.0):
     return bool(expires) and (now * 1000 + skew * 1000) >= expires
 
 
+# The flat per-model weekly keys are the older shape, and on a current Max plan
+# `seven_day_opus` and `seven_day_sonnet` both come back null. The scoped cap
+# did not go away — it moved into the response's `limits` array, arriving as
+#   {kind: "weekly_scoped", scope: {model: {display_name: "Fable"}}, percent: N}
+# with the model named at runtime rather than baked into a key. A fixed
+# whitelist therefore dropped the only per-model cap still reported, so it
+# reached neither a gauge nor pacing's wait driver: that bar could have run to
+# 100% with nothing in the tray ever mentioning it.
+_FLAT_KEYS = ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet")
+
+# `kind: session` and `kind: weekly_all` in the same array duplicate five_hour
+# and seven_day, which we already read from the flat keys — only scoped rows
+# carry anything new.
+_SCOPED_KIND = "weekly_scoped"
+
+# If both shapes ever ship at once, one bar per cap: a scoped row naming Opus
+# defers to a populated seven_day_opus rather than rendering beside it.
+_LEGACY_SCOPE = {"opus": "seven_day_opus", "sonnet": "seven_day_sonnet"}
+
+
+def _slug(text):
+    return "".join(c if c.isalnum() else "_" for c in str(text).strip().lower()).strip("_")
+
+
+def _scoped(raw, out):
+    """Add model/surface-scoped weekly caps from the `limits` array to `out`."""
+    rows = raw.get("limits")
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") != _SCOPED_KIND:
+            continue
+        if row.get("percent") is None:
+            continue
+        scope = row.get("scope")
+        scope = scope if isinstance(scope, dict) else {}
+        model = scope.get("model")
+        model = model if isinstance(model, dict) else {}
+        name = model.get("display_name") or scope.get("surface")
+        slug = _slug(name) if name else ""
+        if not slug or out.get(_LEGACY_SCOPE.get(slug)):
+            continue
+        key = "seven_day_scoped_" + slug
+        if out.get(key):
+            continue
+        out[key] = {"utilization": row.get("percent"),
+                    "resets_at": row.get("resets_at"),
+                    "label": "This week · {}".format(name)}
+
+
 def _normalize(raw):
     out = {}
-    for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+    for key in _FLAT_KEYS:
         v = raw.get(key)
         out[key] = {"utilization": v.get("utilization"), "resets_at": v.get("resets_at")} \
             if isinstance(v, dict) else None
+    try:
+        _scoped(raw, out)
+    except Exception:
+        pass    # a shape change in the array must not cost us the flat keys
     return out
 
 

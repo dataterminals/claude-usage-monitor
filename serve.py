@@ -64,8 +64,16 @@ class State:
 
     def usage_snapshot(self):
         # The tray serves its updater's cached snapshot here; headless has no
-        # updater, so aggregate on the request thread. Still no network call.
-        return self.engine.snapshot()
+        # updater, so aggregate on the request thread. Still no network call —
+        # quota.fetch() is cached, and the refresher thread keeps it warm.
+        limits = {}
+        if self.quota_enabled and not self.mock:
+            try:
+                data = quota.fetch()
+                limits = (data.get("limits") or {}) if data.get("available") else {}
+            except Exception:
+                limits = {}
+        return self.engine.snapshot(five_hour_start=pacing.five_hour_start(limits))
 
     def sample(self):
         """Record a reading so "used today" has a baseline. Mirrors the tray's

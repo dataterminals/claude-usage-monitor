@@ -30,7 +30,10 @@ from pricing import cost_for_record
 
 _TOKEN_KEYS = ("input", "output", "cache_read", "cache_write_5m", "cache_write_1h")
 
-_CACHE_VERSION = 1
+# Bumped to 2 when pricing.json's Sonnet 5 rate was corrected and the model
+# lookup learned to strip dated suffixes: `cost` is baked into every cached
+# record, so without a version bump the old numbers would outlive the fix.
+_CACHE_VERSION = 2
 # Sanity bounds for a transcript timestamp. A bogus epoch (0, or a far-future
 # value from a corrupt line) makes datetime.fromtimestamp raise deep inside
 # snapshot(), so reject it at parse time instead.
@@ -266,12 +269,27 @@ class UsageEngine:
 
     # ---- aggregate --------------------------------------------------------
 
-    def snapshot(self, now=None):
+    def snapshot(self, now=None, five_hour_start=None):
+        """Aggregate the records. `five_hour_start` is the plan's real 5-hour
+        block start (quota's `resets_at - 5h`) when it's known.
+
+        Without it the 5-hour view is a trailing window whose burn rate divides
+        by the time since the *first record in it*, which is wrong twice over: a
+        burst that just began divides by minutes and projects an absurd figure
+        (measured: 0.28h elapsed -> $93 projected on a window actually 2.08h
+        old), and the trailing window straddles the previous block, counting
+        spend the live gauge has already reset past. Given the anchor, both the
+        window and the divisor come off the real block and the two halves of the
+        dashboard finally describe the same five hours.
+        """
         now = now or datetime.now(timezone.utc)
         now_e = now.timestamp()
         local_midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
         midnight_e = local_midnight.timestamp()
         w5_e = now_e - 5 * 3600
+        anchored = bool(five_hour_start) and w5_e <= five_hour_start <= now_e
+        if anchored:
+            w5_e = float(five_hour_start)
         w7_e = now_e - 7 * 24 * 3600
         d30_e = now_e - 30 * 24 * 3600
         h48_e = now_e - 48 * 3600
@@ -305,8 +323,12 @@ class UsageEngine:
                     s["model"] = r["model"]
                     s["last"] = e
                 _add(s, r)
+                # Records arrive in glob order, not time order, so "the model
+                # this session is on" has to be the latest by timestamp — set
+                # unconditionally it was just whichever file was walked last.
+                if e >= s["last"]:
+                    s["model"] = r["model"]
                 s["last"] = max(s["last"], e)
-                s["model"] = r["model"]
             _add(by_model.setdefault(r["model"], _blank()), r)
             _add(by_project.setdefault(r["project"], _blank()), r)
             if e >= d30_e:
@@ -318,8 +340,10 @@ class UsageEngine:
                 h["cost"] += r["cost"]
                 h["tokens"] += sum(r["tokens"].values())
 
-        # rolling 5h burn / projection
-        if first5_e is not None:
+        # 5h burn / projection
+        if anchored:
+            elapsed_h = max((now_e - w5_e) / 3600.0, 1 / 60.0)
+        elif first5_e is not None:
             elapsed_h = max((now_e - first5_e) / 3600.0, 1 / 60.0)
         else:
             elapsed_h = 0.0
@@ -330,6 +354,7 @@ class UsageEngine:
             burn_cost_per_hour=burn,
             projected_cost=burn * 5.0,
             window_start_epoch=w5_e,
+            anchored=anchored,
         )
 
         # 48h hourly series, gap-filled
@@ -377,7 +402,8 @@ class UsageEngine:
             },
             "windows": {
                 "today": _serialize(today, label="Today"),
-                "rolling_5h": {**rolling, "label": "Rolling 5h"},
+                "rolling_5h": {**rolling,
+                               "label": "Current 5h block" if anchored else "Rolling 5h"},
                 "week_7d": _serialize(week, label="Last 7 days"),
                 "all": _serialize(allt, label="All time"),
             },
