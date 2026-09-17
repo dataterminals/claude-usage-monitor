@@ -425,6 +425,9 @@ def headline(pace):
     prompts. The 5-hour window owns the actionable countdown; the weekly one
     speaks in days and allowances.
 
+    A full all-models cap comes before either: nothing frees up until it resets,
+    so the headline names that reset, and when both caps are full, the later one.
+
     A per-model weekly cap (seven_day_opus, seven_day_scoped_fable, ...) has no
     day view of its own, so it speaks only once the all-models lines are fine:
     how far over its line it is, or that it's full. It never reads as on pace.
@@ -437,13 +440,19 @@ def headline(pace):
     day = pace.get("weekly_day") or {}
     now = pace.get("now_epoch") or time.time()
 
-    if five is not None:
-        if five["state"] == "capped":
-            return "5-hour window spent — resets in {}".format(
-                format_duration(five["reset_epoch"] - now))
-        if five["wait_seconds"] > 0:
-            return "Ahead of pace — resume in {}".format(
-                format_duration(five["wait_seconds"]))
+    # A full week blocks every model until it resets, so it can't wait behind the
+    # 5-hour window: "resume in 50m", "resets in 3h" and the next day's allowance
+    # would each point at a moment that frees nothing up. With both caps full,
+    # whichever resets later is the real wait.
+    full = [w for w in (week, five) if w is not None and w["state"] == "capped"]
+    if full:
+        block = max(full, key=lambda w: w["reset_epoch"])
+        return "{} — resets in {}".format(
+            "Weekly cap reached" if block is week else "5-hour window spent",
+            format_duration(block["reset_epoch"] - now))
+    if five is not None and five["wait_seconds"] > 0:
+        return "Ahead of pace — resume in {}".format(
+            format_duration(five["wait_seconds"]))
 
     next_day = format_duration(day["day_end_epoch"] - now) if day else "—"
     if week is not None and week["wait_seconds"] > 0:

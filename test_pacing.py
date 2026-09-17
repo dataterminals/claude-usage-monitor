@@ -380,5 +380,27 @@ h = pacing.compute(lims, now=now)["headline"]
 print("     under :", h)
 check("every line under: still 'On pace'", h.startswith("On pace"), True)
 
+print("\n[24] headline: a full weekly cap comes before the 5-hour window")
+# A full week blocks every model until it resets, but it was checked after the
+# 5-hour window and read as merely over its line: "next allowance in 22h" at 100%,
+# "resume in 50m" with the 5-hour line over, "resets in 3h 20m" with that cap full
+# too. None of those moments frees anything up.
+to_reset = pacing.format_duration(wk_reset - now)
+for label, five_u in (("5h under", 10.0), ("5h over pace", 50.0), ("5h full too", 100.0)):
+    lims = dict(weekly(100.0), five_hour={"utilization": five_u, "resets_at": iso(reset)})
+    h = pacing.compute(lims, now=now)["headline"]
+    print("     week full, %-12s: %s" % (label, h))
+    check("week full, %s: names the weekly reset and nothing sooner" % label,
+          (to_reset in h, any(s in h for s in ("allowance", "resume", "5-hour"))), (True, False))
+# Late in a week the 5-hour block can outlast it, and then that reset is the wait.
+late = wk_reset - 3600
+lims = dict(weekly(100.0), five_hour={"utilization": 100.0, "resets_at": iso(late + 3 * 3600)})
+h = pacing.compute(lims, now=late)["headline"]
+check("both full, the 5h block resetting later: that reset is named",
+      (h.startswith("5-hour window spent"), pacing.format_duration(3 * 3600) in h), (True, True))
+lims = dict(weekly(80.0), five_hour={"utilization": 50.0, "resets_at": iso(reset)})
+check("week over its line but not full: the 5-hour countdown still leads",
+      pacing.compute(lims, now=now)["headline"].startswith("Ahead of pace"), True)
+
 print("\n" + ("ALL PASS" if not fails else "FAILURES: " + ", ".join(fails)))
 sys.exit(1 if fails else 0)

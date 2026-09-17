@@ -380,6 +380,12 @@ function renderPacer(pace){
   const overToday = day && day.remaining_today != null && day.remaining_today < 0;
   const weekNote = weekOver
     ? ` You're also <b>${F.durS(-week.slack_seconds)}</b> ahead of the weekly line.` : "";
+  // A full week blocks every model until it resets, so it comes before the 5-hour
+  // window: that window's countdown, its reset and tomorrow's allowance would each
+  // point at a moment that frees nothing up. If the 5-hour cap is full too and
+  // resets later, that reset is the real wait.
+  const weekFull = week && week.state === "capped" &&
+                   !(five && five.state === "capped" && five.reset_epoch > week.reset_epoch);
   // The binding per-model cap, if one is over its line: the longest wait, as for
   // pacing's wait driver.
   const cap = keys.filter(k => k !== "five_hour" && k !== "seven_day").map(k => w[k])
@@ -387,7 +393,13 @@ function renderPacer(pace){
                   .sort((a, b) => b.wait_seconds - a.wait_seconds)[0];
   let cls, glyph, lead, why;
 
-  if(five && five.state === "capped"){
+  if(weekFull){
+    cls="pace-stop"; glyph="■"; lead="Week spent";
+    why = `The weekly cap is full. It resets at <b>${F.at(week.reset_epoch)}</b>
+           (${until(week.reset_epoch)}), and nothing frees up before then: not the 5-hour
+           window, not tomorrow's allowance. The wait is the reset.`;
+
+  } else if(five && five.state === "capped"){
     cls="pace-stop"; glyph="■"; lead="Session spent";
     why = `The 5-hour window is at its cap. It resets at <b>${F.at(five.reset_epoch)}</b>
            (${until(five.reset_epoch)}) and a fresh 5 hours starts from the moment you pick back
