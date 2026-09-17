@@ -89,6 +89,16 @@ def reset_str_time(epoch):
     return datetime.fromtimestamp(epoch).strftime("%I:%M%p").lstrip("0")
 
 
+def _when(epoch, now, **extra):
+    """An event for /health as {at, age_s, ...extra}, or None if it never happened."""
+    if epoch is None:
+        return None
+    out = {"at": datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds"),
+           "age_s": round(now - epoch, 1)}
+    out.update(extra)
+    return out
+
+
 _FONTS = {}
 
 
@@ -139,7 +149,9 @@ class App:
         self.icon = None
         self.window = None          # DashboardWindow, when pywebview is present
         self.history = pacing.SampleStore()
-        self.last_error = None
+        self.ticks = 0              # passes the updater has finished
+        self.last_tick = None       # epoch the latest one finished
+        self.last_error = None      # (epoch, traceback) of the latest swallowed failure
         self._stop = threading.Event()
         self._dirty = threading.Event()
         self._icon_key = None       # (text, accent) currently drawn
@@ -169,6 +181,38 @@ class App:
 
     def usage_snapshot(self):
         return self.snap or self.engine.snapshot()
+
+    def health(self):
+        """What the updater and the parse cache have actually been doing.
+
+        server.py serves this on GET /health after its "ok". The loop swallows
+        every failure so one bad pass can't freeze the tray, which also made
+        failures invisible: last_error was written and never read, and the
+        cache save reported nothing at all.
+
+        Ask the app, not the disk. A shell descended from an MSIX app (Claude
+        Desktop, Store Python) can see %LOCALAPPDATA% redirected into that
+        app's package, so the cache file it inspects may be a stale private
+        copy this process never touches. That is how a save working every two
+        minutes got diagnosed as "never persists". `file` is the path as this
+        process sees it.
+        """
+        now, eng = time.time(), self.engine
+        err, save = self.last_error, eng.last_save      # read once: tuples, replaced whole
+        return {
+            "pid": os.getpid(),
+            "updater": {
+                "ticks": self.ticks,
+                "last_tick": _when(self.last_tick, now),
+                "last_error": _when(err[0], now, traceback=err[1]) if err else None,
+            },
+            "cache": {
+                "file": eng.cache_file,
+                "load": eng.load_result,
+                "last_save": _when(save[0], now, result=save[1]) if save else None,
+                "last_written": _when(eng.last_written, now),
+            },
+        }
 
     # ---- limit helpers ----
     def _limits(self):
@@ -346,7 +390,8 @@ class App:
                 # A malformed transcript line or a transient Win32 failure must
                 # never kill this thread. When it did, the tray silently froze
                 # at its last values and only a restart brought it back.
-                self.last_error = traceback.format_exc(limit=4)
+                # Swallowed, but kept: /health serves it.
+                self._note_error()
             if self._stop.is_set():
                 break
             # Hard floor between passes. Every watchdog event that lands during
@@ -383,7 +428,14 @@ class App:
             try:
                 self.engine.save_cache()
             except Exception:
-                pass
+                self._note_error()
+        self.ticks += 1
+        self.last_tick = time.time()
+
+    def _note_error(self):
+        # Innermost frames, not the first four: limit=4 kept _updater and
+        # _tick, and cut off the frames that raised.
+        self.last_error = (time.time(), traceback.format_exc(limit=-8))
 
     def _sample(self):
         """Record the reading and recompute pacing. The updater is the only

@@ -80,6 +80,10 @@ def _cache_path(projects_dir):
     return os.path.join(base, "ClaudeUsageMonitor", "engine-cache-{}.json".format(key))
 
 
+def _why(exc):
+    return "{}: {}".format(type(exc).__name__, exc)
+
+
 class UsageEngine:
     def __init__(self, projects_dir):
         self.projects_dir = projects_dir
@@ -91,8 +95,20 @@ class UsageEngine:
         self.first_scan_done = False
         self.cache_file = _cache_path(projects_dir)
         self._saved_count = 0
+        # What the cache calls actually did, for the tray's GET /health. Both
+        # calls return a bare bool that every caller ignores, so without these a
+        # save that never lands is indistinguishable from one that does.
+        # last_save is one (epoch, result) tuple, replaced whole, so a reader on
+        # an HTTP thread can't pair one call's time with another call's result.
+        self.load_result = None     # "hit: …" / "miss: …"; None = never tried
+        self.last_save = None       # (epoch, "saved …" / "unchanged …" / "error: …")
+        self.last_written = None    # epoch of the last write that landed
 
     # ---- persistence ------------------------------------------------------
+
+    def _miss(self, why):
+        self.load_result = "miss: " + why
+        return False
 
     def load_cache(self):
         """Restore offsets/records from the last run. Returns True on a hit.
@@ -103,27 +119,30 @@ class UsageEngine:
         try:
             with open(self.cache_file, encoding="utf-8") as f:
                 doc = json.load(f)
-        except (OSError, ValueError):
-            return False
+        except (OSError, ValueError) as exc:
+            return self._miss(_why(exc))
         if not isinstance(doc, dict) or doc.get("version") != _CACHE_VERSION:
-            return False
+            return self._miss("version {!r}, want {}".format(
+                doc.get("version") if isinstance(doc, dict) else None, _CACHE_VERSION))
         if doc.get("projects_dir") != self.projects_dir:
-            return False
+            return self._miss("written for another projects_dir")
         offsets, seen, records = doc.get("offsets"), doc.get("seen"), doc.get("records")
         if not isinstance(offsets, dict) or not isinstance(seen, list) \
                 or not isinstance(records, list):
-            return False
+            return self._miss("malformed")
         with self._lock:
             self._offsets = {k: v for k, v in offsets.items() if isinstance(v, int)}
             self._seen = set(seen)
             self._records = records
             self._saved_count = len(records)
+        self.load_result = "hit: {} records".format(len(records))
         return True
 
     def save_cache(self):
         """Write offsets/records so the next launch starts warm. Never raises."""
         with self._lock:
             if len(self._records) == self._saved_count:
+                self.last_save = (time.time(), "unchanged: {} records".format(self._saved_count))
                 return False
             # Drop offsets for transcripts that no longer exist, so the file
             # doesn't grow a tail of dead paths forever.
@@ -143,14 +162,17 @@ class UsageEngine:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(doc, f, separators=(",", ":"))
             os.replace(tmp, self.cache_file)
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as exc:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
+            self.last_save = (time.time(), "error: " + _why(exc))
             return False
         with self._lock:
             self._saved_count = count
+        self.last_written = time.time()
+        self.last_save = (self.last_written, "saved {} records".format(count))
         return True
 
     # ---- ingest -----------------------------------------------------------

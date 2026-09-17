@@ -284,8 +284,9 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, and the on-disk reading history. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
+| `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
-| `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. |
+| `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |
 | `tray.py` | Tray icon, tooltip, menu, live file-watch refresh; opens/owns the window. |
 | `serve.py` | Dashboard/API without the tray or window (stdlib only). `CLAUDE_USAGE_MOCK_QUOTA=1` serves canned gauge data — deliberately over-pace — for UI work. |

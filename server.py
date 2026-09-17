@@ -4,7 +4,7 @@ Serves the static dashboard and two JSON endpoints backed by the engine:
     GET /            -> dashboard.html
     GET /api/usage   -> the updater's latest engine snapshot
     GET /api/quota   -> experimental plan-quota (only if enabled)
-    GET /health      -> {"ok": true}
+    GET /health      -> {"ok": true, ...state.health() when the state has one}
 
 Both API handlers serve what the tray's updater thread last computed rather
 than recomputing (or, worse, making a network call) on the request thread — a
@@ -20,6 +20,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # When frozen by PyInstaller, dashboard.html is unpacked under sys._MEIPASS.
 _HERE = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+
+
+def health_body(state):
+    """The /health payload: "ok" first, then the state's own report, if any.
+
+    launcher.pyw's single-instance probe reads only the first 64 bytes and
+    looks for "ok", so "ok" has to lead and has to survive a report that
+    raises or won't serialize. If the probe misses it, a second copy starts.
+    """
+    report = getattr(state, "health", None)
+    if report is None:
+        return '{"ok":true}'
+    try:
+        return json.dumps(dict({"ok": True}, **report()))
+    except Exception as exc:
+        return json.dumps({"ok": True, "health_error": "{}: {}".format(type(exc).__name__, exc)})
 
 
 def make_server(state, host="127.0.0.1", port=8787):
@@ -52,7 +68,7 @@ def make_server(state, host="127.0.0.1", port=8787):
             elif path == "/api/quota":
                 self._send(200, json.dumps(state.quota_snapshot()))
             elif path == "/health":
-                self._send(200, '{"ok":true}')
+                self._send(200, health_body(state))
             else:
                 self._send(404, '{"error":"not found"}')
 
