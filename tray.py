@@ -283,14 +283,24 @@ class App:
         return (self.pace or {}).get("headline") or "Pacing:  —"
 
     def lbl_day(self, item=None):
-        d = (self.pace or {}).get("weekly_day")
+        pace = self.pace or {}
+        d = pace.get("weekly_day")
         if not d:
             return "Today (limit):  —"
+        # Today's allowance can't outrun the week itself: at 96% the whole window
+        # has 4 points left whatever today's own count says, and a full week
+        # leaves none, history or not. Without this the line read "9.3% left"
+        # under a 100% weekly bar.
+        wu = ((pace.get("windows") or {}).get("seven_day") or {}).get("utilization")
+        week_left = None if wu is None else max(0.0, 100.0 - wu)
         used = d.get("used_today")
         if used is None:
+            if week_left == 0.0:
+                return "Today (limit):  nothing left · the week is full"
             return "Today (limit):  {:.1f}% allowance · no history yet".format(d["allowance"])
         line = "Today (limit):  {:.1f}% of {:.1f}%  ·  {:.1f}% left".format(
-            used, d["allowance"], d["remaining_today"])
+            used, d["allowance"],
+            d["remaining_today"] if week_left is None else min(d["remaining_today"], week_left))
         if not d.get("used_today_exact"):
             # History doesn't reach the 08:00 boundary, so this is a floor, not
             # the day's true total — say where the count actually starts.

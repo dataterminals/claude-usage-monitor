@@ -453,7 +453,7 @@ function renderPacer(pace){
   host.innerHTML = `<div class="glyph">${glyph}</div><div><div class="lead">${lead}</div><div class="why">${why}</div></div>`;
 }
 
-function dayStrip(d){
+function dayStrip(d, week){
   if(!d) return "";
   const used = d.used_today;
   const usedTxt = used==null
@@ -466,9 +466,15 @@ function dayStrip(d){
   const sinceLbl = (used==null || since==null)
     ? "Used today"
     : `Used since ${F.at(since)}${d.used_today_exact ? "" : " <span class=pill>(partial)</span>"}`;
-  const leftTxt = used==null ? "—" : `${d.remaining_today.toFixed(1)}%`;
-  const leftCol = used==null ? "var(--dim)"
-    : d.remaining_today < 0 ? "var(--bad)" : d.remaining_today < d.allowance*0.25 ? "var(--warn)" : "var(--good)";
+  // Today's allowance can't outrun the week itself. At 96% the whole window has
+  // 4 points left, whatever today's own count says, and a full week leaves none,
+  // with or without history. Without this cap, a 100% bar sat over a green
+  // "9.3% left today".
+  const weekLeft = week ? Math.max(0, 100 - week.utilization) : Infinity;
+  const left = weekLeft <= 0 ? 0 : used==null ? null : Math.min(d.remaining_today, weekLeft);
+  const leftTxt = left==null ? "—" : `${left.toFixed(1)}%`;
+  const leftCol = left==null ? "var(--dim)"
+    : weekLeft <= 0 || left < 0 ? "var(--bad)" : left < d.allowance*0.25 ? "var(--warn)" : "var(--good)";
   const banked = d.banked_days;
   return `<div class="day rows">
     <div class="row d-alw"><span class="k">Day ${d.day_number} of 7 · allowance</span><span class="v mono">${d.allowance.toFixed(1)}%</span></div>
@@ -511,7 +517,7 @@ function gaugeCard(key, lim, p, day){
     <div class="pace pace-min">${paceMin}</div>
     <div class="reset reset-full">${resetFull}</div>
     <div class="reset reset-min">${resetMin}</div>
-    ${dayStrip(day)}
+    ${dayStrip(day, p)}
   </div>`;
 }
 
@@ -553,7 +559,8 @@ function renderLimits(usage, quota){
     if(worst){
       const five = W.five_hour;
       let cls="verdict-ok", verb=`You have headroom.`;
-      if(worst.utilization>=90){ cls="verdict-bad"; verb=`Ease up — you're nearly capped.`; }
+      if(worst.utilization>=100){ cls="verdict-bad"; verb=`That cap is full until it resets.`; }
+      else if(worst.utilization>=90){ cls="verdict-bad"; verb=`Ease up — you're nearly capped.`; }
       else if(five && five.wait_seconds > 0){ cls="verdict-warn";
         verb=`Ahead of pace — ${F.durS(five.wait_seconds)} of waiting levels the 5-hour line.`; }
       else if(P.wait_seconds > 0){ cls="verdict-warn";
