@@ -257,6 +257,12 @@ The gauges come from the same endpoint Claude Code's `/usage` uses:
   alive across an overnight sleep. It *rotates* the refresh token, so the app
   copies `.credentials.json` to `.credentials.json.bak` before its first write.
   Turn it off if you'd rather Claude Code be the only thing touching that file.
+- **A refused refresh backs off.** If the token endpoint answers `429`, the app
+  waits out its `Retry-After`: at least five minutes, at most an hour, the same
+  as for the gauges endpoint. Any other refusal waits one minute, then two, four,
+  eight, and fifteen at most, while a network failure keeps retrying every
+  minute. A fresh `/login` still shows up on the next poll, and *Attempt token
+  refresh* always tries at once.
 - If the token is rejected anyway (`401`), fix it either way:
   1. **Run `/login` in a Claude Code terminal** — mints a fresh, correctly-scoped
      token that the app picks up within a poll.
@@ -274,9 +280,10 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | File | Role |
 |---|---|
 | `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
-| `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL. Read-only unless `allow_refresh=True`. |
+| `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL, and backs off refused refreshes. Read-only unless `allow_refresh=True`. |
 | `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, and the on-disk reading history. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
+| `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. |
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |

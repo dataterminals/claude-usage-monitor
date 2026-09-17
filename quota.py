@@ -104,10 +104,20 @@ _TTL_NET = 10.0     # transient (DNS/socket): the network is usually just not up
                     # app look dead for minutes after boot.
 _TTL_AUTH = 60.0    # token problem; an mtime change re-checks sooner anyway
 _TTL_FAIL = 300.0   # server told us to back off (429)
+_TTL_REFRESH_MAX = 900.0    # ceiling for the doubling wait after refused refreshes
 
 
 class RefreshError(Exception):
-    """A token refresh failed. Carries a human-readable reason."""
+    """A token refresh failed. Carries a human-readable reason and, when the
+    token endpoint answered with an HTTP error, its `status` and Retry-After
+    seconds (`retry_after`). Both stay None when no error response came back:
+    the network or TLS failed, the answer was unusable, or there was no refresh
+    token to send."""
+
+    def __init__(self, reason, status=None, retry_after=None):
+        super().__init__(reason)
+        self.status = status
+        self.retry_after = retry_after
 
 
 def _creds_mtime():
@@ -159,6 +169,22 @@ def _http_detail(exc):
     return "HTTP {}{}".format(exc.code, ": " + str(detail) if detail else "")
 
 
+def _retry_after(headers):
+    """Retry-After in whole seconds, or None when it is absent, not positive, or
+    in the HTTP-date form — all of which _rate_limit_ttl reads as _TTL_FAIL."""
+    try:
+        secs = int(headers.get("retry-after") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+def _rate_limit_ttl(retry_after):
+    """How long to sit out a 429: the server's Retry-After, clamped to between
+    _TTL_FAIL and an hour. Both endpoints wait under this one clamp."""
+    return max(_TTL_FAIL, min(retry_after or _TTL_FAIL, 3600))
+
+
 def _refresh(oauth):
     """Refresh the access token and persist it. Raises RefreshError on failure
     (the caller keeps the old token)."""
@@ -177,7 +203,8 @@ def _refresh(oauth):
         with urllib.request.urlopen(req, timeout=10, context=_context()) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        raise RefreshError(_http_detail(exc)) from exc
+        raise RefreshError(_http_detail(exc), status=exc.code,
+                           retry_after=_retry_after(exc.headers)) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise RefreshError(str(exc)) from exc
 
@@ -217,6 +244,42 @@ def _expired(oauth, now, skew=300.0):
     """True when the access token is at or within `skew` seconds of expiry."""
     expires = oauth.get("expiresAt")
     return bool(expires) and (now * 1000 + skew * 1000) >= expires
+
+
+# Consecutive automatic refreshes the token endpoint has refused, counted against
+# the credentials file as it stood (its mtime). Any rewrite of that file — our
+# own successful refresh, Claude Code refreshing itself, `/login` — starts over.
+_refusals = {"creds_mtime": None, "count": 0}
+
+
+def _refresh_backoff(exc, mtime):
+    """How long a failed *automatic* refresh holds off the next attempt.
+
+    Every failure used to wait a flat _TTL_AUTH, so an expired token behind a
+    rate-limited endpoint re-POSTed once a minute for as long as the app ran —
+    ~1,400 refresh POSTs a day. On 2026-09-17 the endpoint was answering 429
+    while the refresh token itself still had weeks left. A 429 now waits out
+    Retry-After under the usage endpoint's clamp; any other HTTP refusal doubles
+    from _TTL_AUTH up to _TTL_REFRESH_MAX. A failure with no HTTP status (network
+    or TLS down, nothing to send) never reached the endpoint, so it keeps the
+    flat _TTL_AUTH and recovers as soon as the network does.
+
+    None of this delays a fresh login: a credentials rewrite invalidates the
+    cached failure on the very next poll. The manual "Attempt token refresh"
+    doesn't come through here and always tries at once.
+    """
+    if exc.status == 429:
+        return _rate_limit_ttl(exc.retry_after)
+    if exc.status is None:
+        return _TTL_AUTH
+    if _refusals["creds_mtime"] != mtime:
+        _refusals.update(creds_mtime=mtime, count=0)
+    _refusals["count"] += 1
+    return min(_TTL_AUTH * 2 ** (_refusals["count"] - 1), _TTL_REFRESH_MAX)
+
+
+def _retry_hint(ttl):
+    return "retrying in ~{}m".format(max(1, round(ttl / 60)))
 
 
 # The flat per-model weekly keys are the older shape, and on a current Max plan
@@ -300,7 +363,9 @@ def fetch(force=False, allow_refresh=False, force_refresh_token=False):
     (which writes credentials) on expiry/401; default False is strictly
     read-only. force_refresh_token=True mints a fresh token up front regardless
     of the current one's state — the tray's "Attempt token refresh".
-    Honors HTTP 429 Retry-After so we don't hammer a rate-limited endpoint.
+    Honors HTTP 429 Retry-After from both endpoints, and backs off repeated
+    failed automatic refreshes (_refresh_backoff), so we don't hammer a
+    rate-limited endpoint.
 
     Serialized on a module lock: the updater thread and any HTTP handler that
     calls in share one in-flight request rather than racing to duplicate it.
@@ -361,11 +426,12 @@ def _fetch_locked(force, allow_refresh, force_refresh_token):
                 mtime = _creds_mtime()
                 refreshed_once = True
             except RefreshError as exc:
+                wait = _refresh_backoff(exc, mtime)
                 return _store(now, mtime,
                               {"available": False,
-                               "reason": "token expired; refresh failed ({}) — run /login "
-                                         "in a terminal".format(exc)},
-                              ttl=_TTL_AUTH)
+                               "reason": "token expired; refresh failed ({}) — {}, or run "
+                                         "/login in a terminal".format(exc, _retry_hint(wait))},
+                              ttl=wait)
         else:
             warn = "token near/past expiry — use “Attempt token refresh” or run /login"
 
@@ -399,16 +465,14 @@ def _fetch_locked(force, allow_refresh, force_refresh_token):
                     mtime = _creds_mtime()
                     continue
                 except RefreshError as exc2:
+                    wait = _refresh_backoff(exc2, mtime)
                     return _store(now, mtime,
                                   {"available": False,
-                                   "reason": "token rejected (401); refresh failed ({})".format(exc2)},
-                                  ttl=_TTL_AUTH)
+                                   "reason": "token rejected (401); refresh failed ({}) — {}".format(
+                                       exc2, _retry_hint(wait))},
+                                  ttl=wait)
             if exc.code == 429:
-                try:
-                    ra = int(exc.headers.get("retry-after") or 0)
-                except (TypeError, ValueError):
-                    ra = 0
-                ra = max(_TTL_FAIL, min(ra or _TTL_FAIL, 3600))
+                ra = _rate_limit_ttl(_retry_after(exc.headers))
                 return _store(now, mtime,
                               {"available": False,
                                "reason": "rate-limited by the usage endpoint — retry in ~{}m".format(
