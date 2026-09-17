@@ -185,22 +185,22 @@ frozen while its denominator grows a minute per minute. Spend $10 in the first
 hour and it reads $10/h; sit idle for an hour and it reads $5/h; another hour
 and $3.33/h. It never reaches zero inside the block.
 
-The **tachometer** is the other number. Every request in the last 48 hours
-contributes its cost times `e^(-age/τ)` with `τ = 10 min`, and that sum over `τ`
-is a rate:
+The **tachometer** is the other number: what landed in the last ten minutes, as
+an hourly rate. A plain box rather than a decaying average, on purpose — it says
+exactly what it measures:
 
-- steady spending at `$R/h` converges on `R`;
-- a lone $2 request reads as `$12/h` the moment it lands;
-- an idle stretch decays it — a third left after ten minutes, a twentieth after
-  thirty, effectively zero within the hour.
+- steady spending at `$R/h` reads `R` once the box is full;
+- a lone $2 request reads as `$12/h` the moment it lands, and for the ten
+  minutes after;
+- ten minutes after your last request the reading is zero.
 
-The dial's end (the red mark) is your own fastest pace in those 48 hours, so it
-is scaled to you rather than to a constant: pinned means *as hard as you ever
-push*, a quarter means a quarter of that. The peak and when it happened sit
-under the dial. The rate jumps only at a request and decays between them, so its
-maximum is at a request time, and one ordered pass with a running decayed sum
-finds both the current reading and the peak (`engine._velocity`). Check it with
-`python test_velocity.py`.
+The dial's end (the red mark) is your own fastest ten minutes in the last 48
+hours, so it is scaled to you rather than to a constant: pinned means *as hard
+as you ever push*, a quarter means a quarter of that. The peak and when it
+happened sit under the dial. The reading only rises when a request lands and
+falls as older ones age out, so its maximum is at a request time, and one
+ordered pass with a sliding box finds both the current reading and the peak
+(`engine._velocity`). Check it with `python test_velocity.py`.
 
 On a short window the dial is the first thing to go: `squeeze-0` folds the
 tachometer back to its number and `tok/h`, and only then does `squeeze-1` drop
@@ -315,7 +315,7 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
-| `test_velocity.py` | Self-check for the tachometer's rate (`python test_velocity.py`): what one request reads as, how it decays, convergence, where the peak sits, and that it falls during an idle hour while the block average sits. Offline. |
+| `test_velocity.py` | Self-check for the tachometer's rate (`python test_velocity.py`): what one request reads as, when it drops out, a full box, where the peak sits, and that it reads zero during an idle hour while the block average sits. Offline. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |

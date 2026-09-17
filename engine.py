@@ -20,7 +20,6 @@ restart, so anything unexpected here is skipped, never raised.
 import glob
 import hashlib
 import json
-import math
 import os
 import tempfile
 import threading
@@ -40,9 +39,9 @@ _CACHE_VERSION = 2
 # snapshot(), so reject it at parse time instead.
 _MIN_EPOCH = 946684800.0                    # 2000-01-01
 _MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
-# Time constant of the "right now" rate (see _velocity). A request weighs
-# e^(-age/tau) in it: full strength as it lands, a third of that ten minutes on.
-_VELOCITY_TAU = 600.0
+# The "right now" rate (see _velocity): what landed in the last ten minutes,
+# as an hourly figure.
+_VELOCITY_WINDOW = 600.0
 _VELOCITY_HOURS = 48
 
 
@@ -79,50 +78,55 @@ def _num(v):
     return int(v) if v > 0 else 0
 
 
-def _velocity(recent, now_e, tau=_VELOCITY_TAU):
+def _velocity(recent, now_e, window=_VELOCITY_WINDOW):
     """The rate right now, as distinct from the block's average.
 
     `rolling_5h.burn_cost_per_hour` divides the block's spend by the block's
     age, which is the right number for "what will these five hours cost" and
     the wrong one for "how fast am I going": an hour after the last request it
     has barely moved, because its numerator is frozen while its denominator
-    grows a minute per minute. This is the other number. Every request in the
-    window contributes its cost times e^(-age/tau), and that sum over tau is a
-    rate: steady spending at $R/h converges on R, a lone $2 request reads as
-    $12/h the moment it lands (tau = 10 min), and an idle stretch decays it —
-    a third left after ten minutes, a twentieth after thirty.
+    grows a minute per minute. This is the other number: what landed in the
+    last `window` seconds (ten minutes), as an hourly rate. A lone $2 request
+    reads as $12/h the moment it lands and for the ten minutes after, then
+    drops out; steady spending at $R/h reads R once the box is full; ten
+    minutes after the last request the reading is zero. A plain box rather
+    than a decaying kernel because it says exactly what it measures.
 
-    Also the peak of that same curve across the window, so a gauge has a scale
-    that is your own fastest recent pace rather than a magic number. The rate
-    only ever jumps up at a request and decays between them, so its maximum
-    sits at a request time, and one ordered pass with a running decayed sum
-    finds it. `recent` is (epoch, cost, tokens) tuples in any order.
+    Also the peak of that reading across the 48-hour window, so a gauge has a
+    scale that is your own fastest ten minutes rather than a magic number. The
+    reading only rises when a request lands and falls as older ones age out,
+    so its maximum sits at a request time, and one ordered pass with a sliding
+    box finds it. `recent` is (epoch, cost, tokens) tuples in any order.
     """
     recent = sorted(recent, key=lambda x: x[0])
-    tau_h = tau / 3600.0
+    per_h = 3600.0 / window
     cost_sum = tok_sum = peak = 0.0
-    peak_at = last_e = None
+    peak_at = None
+    head = 0                        # oldest record still inside the box
     for e, cost, tok in recent:
-        if last_e is not None:
-            decay = math.exp(-(e - last_e) / tau)
-            cost_sum *= decay
-            tok_sum *= decay
         cost_sum += cost
         tok_sum += tok
-        last_e = e
+        while recent[head][0] <= e - window:
+            cost_sum -= recent[head][1]
+            tok_sum -= recent[head][2]
+            head += 1
         if cost_sum > peak:
             peak, peak_at = cost_sum, e
-    if last_e is not None:
-        # A record stamped after "now" (clock skew) counts as just landed.
-        decay = math.exp(-max(0.0, now_e - last_e) / tau)
-        cost_sum *= decay
-        tok_sum *= decay
+    # The reading now, summed afresh over the whole list: `head` was advanced
+    # relative to the *last record*, and a record stamped after "now" (clock
+    # skew) would have carried it past requests still inside now's box. That
+    # skewed record itself counts as just landed.
+    cost_now = tok_now = 0.0
+    for e, cost, tok in recent:
+        if e > now_e - window:
+            cost_now += cost
+            tok_now += tok
     return {
-        "cost_per_hour": cost_sum / tau_h,
-        "tokens_per_hour": tok_sum / tau_h,
-        "peak_cost_per_hour": peak / tau_h,
+        "cost_per_hour": cost_now * per_h,
+        "tokens_per_hour": tok_now * per_h,
+        "peak_cost_per_hour": peak * per_h,
         "peak_epoch": peak_at,
-        "tau_seconds": tau,
+        "window_seconds": window,
         "window_hours": _VELOCITY_HOURS,
     }
 
