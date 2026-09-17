@@ -380,6 +380,11 @@ function renderPacer(pace){
   const overToday = day && day.remaining_today != null && day.remaining_today < 0;
   const weekNote = weekOver
     ? ` You're also <b>${F.durS(-week.slack_seconds)}</b> ahead of the weekly line.` : "";
+  // The binding per-model cap, if one is over its line: the longest wait, as for
+  // pacing's wait driver.
+  const cap = keys.filter(k => k !== "five_hour" && k !== "seven_day").map(k => w[k])
+                  .filter(x => x.wait_seconds > 0)
+                  .sort((a, b) => b.wait_seconds - a.wait_seconds)[0];
   let cls, glyph, lead, why;
 
   if(five && five.state === "capped"){
@@ -407,6 +412,23 @@ function renderPacer(pace){
            ${weekOver ? `The weekly line is <b>${F.durS(-week.slack_seconds)}</b> behind you`
                       : `You're still ahead on the week overall`} — the 5-hour window is fine, so this
            is a today problem, not a right-now one.`;
+
+  } else if(cap){
+    // A per-model weekly cap (seven_day_opus, seven_day_scoped_fable, ...) has no
+    // branch above, so one over its line used to land in "On pace" below, with
+    // durS clamping its negative slack to "0s of budget banked", even at 100%.
+    const name = cap.label.split("·").pop().trim();
+    if(cap.state === "capped"){
+      cls="pace-stop"; glyph="■"; lead=`${name} capped`;
+      why = `The <b>${cap.label}</b> cap is full. It resets at <b>${F.at(cap.reset_epoch)}</b>
+             (${until(cap.reset_epoch)}). The 5-hour and weekly lines are fine, so other models
+             still have room.`;
+    } else {
+      cls="pace-wait"; glyph="◷"; lead=`${name} over pace`;
+      why = `You're <b>${F.durS(-cap.slack_seconds)}</b> ahead of the <b>${cap.label}</b> line, which
+             catches up at <b>${F.at(cap.resume_at_epoch)}</b>. The 5-hour and weekly lines are fine,
+             so this is only about ${name}.`;
+    }
 
   } else {
     let tight = null;

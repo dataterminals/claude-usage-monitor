@@ -348,5 +348,37 @@ check("jitter just below the minute still lands on it", pacing.five_hour_start(
 for bad in ({}, {"five_hour": None}, {"five_hour": {"utilization": 0.0, "resets_at": None}}):
     check("no block for %r" % (bad,), pacing.five_hour_start(bad), None)
 
+print("\n[23] headline: a per-model cap over its line, or full, never reads 'On pace'")
+# Nothing before the fallback looked past five_hour and seven_day, so a scoped cap
+# over its line reached "On pace": min() took its negative slack and
+# format_duration clamped it to "0s of budget banked", even at 100%.
+lims = {
+    "five_hour": {"utilization": 10.0, "resets_at": iso(reset)},        # under
+    "seven_day": {"utilization": 30.0, "resets_at": iso(wk_reset)},     # under
+    "seven_day_scoped_fable": {"utilization": 70.0, "resets_at": iso(wk_reset),
+                               "label": "This week · Fable"},           # over
+}
+p = pacing.compute(lims, now=now)
+h, fable = p["headline"], p["windows"]["seven_day_scoped_fable"]
+print("     over  :", h)
+check("over its line: not 'On pace'", h.startswith("On pace"), False)
+check("  names the cap and how far over it is",
+      ("Fable" in h, pacing.format_duration(fable["wait_seconds"]) in h), (True, True))
+lims["seven_day_scoped_fable"]["utilization"] = 100.0
+h = pacing.compute(lims, now=now)["headline"]
+print("     full  :", h)
+check("full: not 'On pace'", h.startswith("On pace"), False)
+check("  names the cap and when it resets",
+      ("Fable" in h, pacing.format_duration(wk_reset - now) in h), (True, True))
+lims["seven_day_opus"] = {"utilization": 60.0, "resets_at": iso(wk_reset)}  # over, by less
+lims["seven_day_scoped_fable"]["utilization"] = 90.0
+h = pacing.compute(lims, now=now)["headline"]
+check("two caps over: the longer wait is the one named", ("Fable" in h, "Opus" in h), (True, False))
+del lims["seven_day_opus"]
+lims["seven_day_scoped_fable"]["utilization"] = 5.0
+h = pacing.compute(lims, now=now)["headline"]
+print("     under :", h)
+check("every line under: still 'On pace'", h.startswith("On pace"), True)
+
 print("\n" + ("ALL PASS" if not fails else "FAILURES: " + ", ".join(fails)))
 sys.exit(1 if fails else 0)

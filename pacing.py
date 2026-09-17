@@ -424,6 +424,10 @@ def headline(pace):
     and "don't use Claude for 28 hours" isn't advice anyone acts on between
     prompts. The 5-hour window owns the actionable countdown; the weekly one
     speaks in days and allowances.
+
+    A per-model weekly cap (seven_day_opus, seven_day_scoped_fable, ...) has no
+    day view of its own, so it speaks only once the all-models lines are fine:
+    how far over its line it is, or that it's full. It never reads as on pace.
     """
     windows = pace.get("windows") or {}
     if not windows:
@@ -448,6 +452,20 @@ def headline(pace):
     left = day.get("remaining_today")
     if left is not None and left < 0:
         return "Over today's allowance by {:.1f}pt — next in {}".format(-left, next_day)
+
+    # Nothing above looks past five_hour and seven_day, so a per-model cap over
+    # its line used to reach "On pace" below: min() picked its negative slack and
+    # format_duration clamped that to "0s of budget banked", even at 100%. The
+    # longest wait is the binding one, as it is for the wait driver.
+    over = [w for w in windows.values() if w["wait_seconds"] > 0]
+    if over:
+        cap = max(over, key=lambda w: w["wait_seconds"])
+        name = "{} {}".format(cap["label"].split("·")[-1].strip(),
+                              "weekly" if cap["window_hours"] >= 168 else "5-hour")
+        if cap["state"] == "capped":
+            return "{} cap reached — resets in {}".format(
+                name, format_duration(cap["reset_epoch"] - now))
+        return "Over the {} line by {}".format(name, format_duration(-cap["slack_seconds"]))
 
     slack = min((w["slack_seconds"] for w in windows.values()), default=0.0)
     return "On pace — {} of budget banked".format(format_duration(slack))
