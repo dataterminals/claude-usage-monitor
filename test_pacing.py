@@ -8,19 +8,32 @@ The catch-up formula is small but easy to get subtly wrong (window phase, the
 ceiling's effect on whether "spent" is even reachable, and the endpoint's
 jittery reset anchor), so each block here pins one property of it.
 """
+import json
 import os
 import sys
 import tempfile
 from datetime import datetime, timezone
 
 import pacing
+import quota
 
+
+# Only quota._normalize runs here, fed hand-built responses. Anything that would
+# read the real credentials or reach the network fails loudly instead.
+def _offline(*_args, **_kwargs):
+    raise RuntimeError("test_pacing.py must stay offline: no credentials, no network")
+
+
+quota._read_creds = quota._write_creds = quota._call = quota._refresh = _offline
 
 fails = []
 
 
 def check(name, got, want, tol=1e-6):
-    ok = abs(got - want) <= tol if isinstance(want, float) else got == want
+    # Tolerance only between numbers: a regression that returns None where a
+    # float belongs should print FAIL, not stop the run with a TypeError.
+    close = isinstance(want, float) and isinstance(got, (int, float))
+    ok = abs(got - want) <= tol if close else got == want
     print(("  ok   " if ok else "  FAIL ") + name + "  got=%r want=%r" % (got, want))
     if not ok:
         fails.append(name)
@@ -183,6 +196,157 @@ check("day start on the minute", d["day_start_epoch"] % 60, 0.0)
 print("     day start :", datetime.fromtimestamp(d["day_start_epoch"]).astimezone().strftime("%a %I:%M:%S %p"))
 check("prints as 08:00:00",
       datetime.fromtimestamp(d["day_start_epoch"]).astimezone().strftime("%H:%M:%S"), "08:00:00")
+
+wk_start = wk_reset - 7 * 86400
+
+
+def weekly(util, reset_e=wk_reset):
+    """Just the weekly window, in the shape quota.fetch() hands to pacing."""
+    return {"seven_day": {"utilization": util, "resets_at": iso(reset_e)}}
+
+
+print("\n[15] a drop inside one window is a plan rebase: prune the week, no confident 0.0")
+# A plan change (Max 5x -> 20x) rebases every bar DOWN mid-window while resets_at,
+# the generation marker, stays put. Unpruned, the pre-upgrade 40 at the day
+# boundary served as today's baseline and used_today clamped to 0.0 — flagged
+# exact, because that sample really does sit at the boundary.
+store5 = pacing.SampleStore(os.path.join(tempfile.mkdtemp(), "h5.json"))
+store5.record(weekly(40.0), now=day_start - 600)
+store5.record(weekly(46.0), now=day_start + 3600)
+t_up = day_start + 7200                        # the upgrade: same resets_at, lower bar
+store5.record(weekly(12.0), now=t_up)
+check("this week's pre-upgrade samples pruned",
+      [s["u"]["seven_day"] for s in store5.load() if s["w"] == wk_reset], [12.0])
+store5.record(weekly(13.0), now=t_up + 1800)
+d = pacing.compute(weekly(13.0), now=t_up + 1800, store=store5)["weekly_day"]
+check("used today == 13-12, not a clamped 0.0", d["used_today"], 1.0)
+check("  flagged partial", d["used_today_exact"], False)
+check("  counted from the first post-upgrade reading", d["used_since_epoch"], t_up)
+
+print("\n[16] a drop already on disk: readers report unknown, the next record prunes it")
+# History as a build without the rebase check wrote it: the upgrade's 12 stored
+# straight after the pre-upgrade 46. serve.py computes pacing without recording
+# first, so a reader can meet that history before the writer prunes it.
+path6 = os.path.join(tempfile.mkdtemp(), "h6.json")
+with open(path6, "w", encoding="utf-8") as f:
+    json.dump({"samples": [{"t": day_start - 600, "u": {"seven_day": 40.0}, "w": wk_reset},
+                           {"t": day_start + 3600, "u": {"seven_day": 46.0}, "w": wk_reset},
+                           {"t": t_up, "u": {"seven_day": 12.0}, "w": wk_reset}]}, f)
+store6 = pacing.SampleStore(path6)
+d = pacing.compute(weekly(12.5), now=t_up + 1800, store=store6)["weekly_day"]
+check("baseline above the reading -> used today unknown, not 0.0", d["used_today"], None)
+check("  and not flagged exact", d["used_today_exact"], False)
+store6.record(weekly(12.5), now=t_up + 1800)
+check("drop measured from the week's max (46), not its last sample (12)",
+      [s["u"]["seven_day"] for s in store6.load() if s["w"] == wk_reset], [12.5])
+
+print("\n[17] only a drop inside ONE window counts: a reset or a small dip isn't a rebase")
+store7 = pacing.SampleStore(os.path.join(tempfile.mkdtemp(), "h7.json"))
+store7.record(weekly(88.0, wk_start), now=wk_start - 3600)    # last week, near its cap
+day1 = wk_start + 86400
+store7.record(weekly(3.0), now=day1 - 600)                    # this week, far below it
+store7.record(weekly(5.0), now=day1 + 3600)
+d = pacing.compute(weekly(5.0), now=day1 + 3600, store=store7)["weekly_day"]
+check("the new week's baseline survives the reset", d["used_today"], 2.0)
+check("  exact after the reset", d["used_today_exact"], True)
+store7.record(weekly(4.8), now=day1 + 7200)                   # 0.2pt dip, under _REBASE_DROP
+d = pacing.compute(weekly(4.8), now=day1 + 7200, store=store7)["weekly_day"]
+check("a dip under the threshold keeps it too", d["used_today"], 1.8)
+check("  exact after the dip", d["used_today_exact"], True)
+
+print("\n[18] day 0 counts from the window start, where utilization is 0: no history needed")
+# The measured case: the week's first stored sample came late on day one, and the
+# store answered 1.0 "since 11:41 PM" against a true 3.0.
+t0 = wk_start + 20 * 3600
+d = pacing.compute(weekly(3.0), now=t0)["weekly_day"]
+check("day index 0", d["day_index"], 0)
+check("used today == the week so far, with no store at all", d["used_today"], 3.0)
+check("  exact", d["used_today_exact"], True)
+store8 = pacing.SampleStore(os.path.join(tempfile.mkdtemp(), "h8.json"))
+store8.record(weekly(2.0), now=wk_start + 16 * 3600)
+store8.record(weekly(3.0), now=t0)
+d = pacing.compute(weekly(3.0), now=t0, store=store8)["weekly_day"]
+check("history that starts mid-day can't understate it", d["used_today"], 3.0)
+check("  still exact", d["used_today_exact"], True)
+
+print("\n[19] the day index floors at 0 when the clock is behind the window start")
+# Right at a rollover, a local clock a few seconds behind the server's puts `now`
+# before the new window's start. A bare floor-divide made that day -1.
+d = pacing.compute(weekly(0.4), now=wk_start - 90)["weekly_day"]
+check("day index 0, not -1", d["day_index"], 0)
+check("day starts at the window start, not a day before", d["day_start_epoch"], wk_start)
+check("budget at day start 0, not negative", d["budget_at_day_start"], 0.0)
+d = pacing.compute(weekly(50.0), now=wk_reset + 90)["weekly_day"]
+check("the other end still stops at day 7", d["day_index"], 6)
+
+print("\n[20] scoped caps: window length by key prefix, label from the limit dict")
+# quota names the per-model weekly cap at runtime (seven_day_scoped_<model>), so no
+# table holds its length or its label. A fixed table kept it out of both the
+# gauges and the wait driver.
+check("seven_day_scoped_* is a week", pacing.window_hours("seven_day_scoped_fable"), 168.0)
+check("other keys aren't windows", pacing.window_hours("extra_usage"), None)
+lims = {
+    "five_hour": {"utilization": 10.0, "resets_at": iso(reset)},        # under
+    "seven_day": {"utilization": 30.0, "resets_at": iso(wk_reset)},     # under
+    "seven_day_scoped_fable": {"utilization": 70.0, "resets_at": iso(wk_reset),
+                               "label": "This week · Fable"},           # way over
+}
+p = pacing.compute(lims, now=now)
+w = p["windows"].get("seven_day_scoped_fable") or {}
+check("scoped cap gets a 168h window", w.get("window_hours"), 168.0)
+check("  labelled from its limit dict", w.get("label"), "This week · Fable")
+check("  and it can drive the wait", p["wait_driver"], "seven_day_scoped_fable")
+check("a table key with no label still reads LABELS", p["windows"]["seven_day"]["label"],
+      "This week · all models")
+
+print("\n[21] quota._normalize keeps a weekly_scoped `limits` row (hand-built response)")
+# Current Max plans report null for both flat per-model keys; the scoped cap comes
+# only in the `limits` array, which the four-key whitelist never looked at.
+raw = {
+    "five_hour": {"utilization": 12.0, "resets_at": iso(reset)},
+    "seven_day": {"utilization": 30.0, "resets_at": iso(wk_reset)},
+    "seven_day_opus": None,
+    "seven_day_sonnet": None,
+    "limits": [
+        {"kind": "session", "percent": 12.0, "resets_at": iso(reset)},
+        {"kind": "weekly_all", "percent": 30.0, "resets_at": iso(wk_reset)},
+        {"kind": "weekly_scoped", "percent": 41.0, "resets_at": iso(wk_reset),
+         "scope": {"model": {"display_name": "Fable"}}},
+    ],
+}
+flat = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]
+lims = quota._normalize(raw)
+check("scoped row kept as seven_day_scoped_fable", lims.get("seven_day_scoped_fable"),
+      {"utilization": 41.0, "resets_at": iso(wk_reset), "label": "This week · Fable"})
+check("session/weekly_all rows add nothing", sorted(lims), sorted(flat + ["seven_day_scoped_fable"]))
+w = pacing.compute(lims, now=now)["windows"].get("seven_day_scoped_fable") or {}
+check("pacing gauges it under that label", (w.get("utilization"), w.get("label")),
+      (41.0, "This week · Fable"))
+# One bar per cap: a scoped Opus row defers to a populated seven_day_opus, but
+# with that key null — today's real shape — the row is the only report and stays.
+opus = {"kind": "weekly_scoped", "percent": 55.0, "resets_at": iso(wk_reset),
+        "scope": {"model": {"display_name": "Opus"}}}
+populated = dict(raw, limits=[opus],
+                 seven_day_opus={"utilization": 55.0, "resets_at": iso(wk_reset)})
+check("scoped Opus defers to a populated seven_day_opus",
+      "seven_day_scoped_opus" in quota._normalize(populated), False)
+check("  but not to a null one",
+      "seven_day_scoped_opus" in quota._normalize(dict(raw, limits=[opus])), True)
+for why, row in (("no percent", {"kind": "weekly_scoped",
+                                 "scope": {"model": {"display_name": "Fable"}}}),
+                 ("no model name", {"kind": "weekly_scoped", "percent": 5.0,
+                                    "scope": {"model": {}}})):
+    check("a scoped row with %s adds no key" % why,
+          sorted(quota._normalize(dict(raw, limits=[row]))), flat)
+
+print("\n[22] five_hour_start: the block opened at resets_at - 5h, on the minute")
+# The engine anchors its 5-hour burn here, so it must be the instant the gauge measures.
+check("block start", pacing.five_hour_start(
+    {"five_hour": {"utilization": 3.0, "resets_at": iso(reset)}}), start)
+check("jitter just below the minute still lands on it", pacing.five_hour_start(
+    {"five_hour": {"utilization": 3.0, "resets_at": iso(reset - 0.38)}}), start)
+for bad in ({}, {"five_hour": None}, {"five_hour": {"utilization": 0.0, "resets_at": None}}):
+    check("no block for %r" % (bad,), pacing.five_hour_start(bad), None)
 
 print("\n" + ("ALL PASS" if not fails else "FAILURES: " + ", ".join(fails)))
 sys.exit(1 if fails else 0)
