@@ -20,6 +20,7 @@ restart, so anything unexpected here is skipped, never raised.
 import glob
 import hashlib
 import json
+import math
 import os
 import tempfile
 import threading
@@ -39,6 +40,10 @@ _CACHE_VERSION = 2
 # snapshot(), so reject it at parse time instead.
 _MIN_EPOCH = 946684800.0                    # 2000-01-01
 _MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
+# Time constant of the "right now" rate (see _velocity). A request weighs
+# e^(-age/tau) in it: full strength as it lands, a third of that ten minutes on.
+_VELOCITY_TAU = 600.0
+_VELOCITY_HOURS = 48
 
 
 def _blank():
@@ -72,6 +77,54 @@ def _num(v):
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return 0
     return int(v) if v > 0 else 0
+
+
+def _velocity(recent, now_e, tau=_VELOCITY_TAU):
+    """The rate right now, as distinct from the block's average.
+
+    `rolling_5h.burn_cost_per_hour` divides the block's spend by the block's
+    age, which is the right number for "what will these five hours cost" and
+    the wrong one for "how fast am I going": an hour after the last request it
+    has barely moved, because its numerator is frozen while its denominator
+    grows a minute per minute. This is the other number. Every request in the
+    window contributes its cost times e^(-age/tau), and that sum over tau is a
+    rate: steady spending at $R/h converges on R, a lone $2 request reads as
+    $12/h the moment it lands (tau = 10 min), and an idle stretch decays it —
+    a third left after ten minutes, a twentieth after thirty.
+
+    Also the peak of that same curve across the window, so a gauge has a scale
+    that is your own fastest recent pace rather than a magic number. The rate
+    only ever jumps up at a request and decays between them, so its maximum
+    sits at a request time, and one ordered pass with a running decayed sum
+    finds it. `recent` is (epoch, cost, tokens) tuples in any order.
+    """
+    recent = sorted(recent, key=lambda x: x[0])
+    tau_h = tau / 3600.0
+    cost_sum = tok_sum = peak = 0.0
+    peak_at = last_e = None
+    for e, cost, tok in recent:
+        if last_e is not None:
+            decay = math.exp(-(e - last_e) / tau)
+            cost_sum *= decay
+            tok_sum *= decay
+        cost_sum += cost
+        tok_sum += tok
+        last_e = e
+        if cost_sum > peak:
+            peak, peak_at = cost_sum, e
+    if last_e is not None:
+        # A record stamped after "now" (clock skew) counts as just landed.
+        decay = math.exp(-max(0.0, now_e - last_e) / tau)
+        cost_sum *= decay
+        tok_sum *= decay
+    return {
+        "cost_per_hour": cost_sum / tau_h,
+        "tokens_per_hour": tok_sum / tau_h,
+        "peak_cost_per_hour": peak / tau_h,
+        "peak_epoch": peak_at,
+        "tau_seconds": tau,
+        "window_hours": _VELOCITY_HOURS,
+    }
 
 
 def _cache_path(projects_dir):
@@ -314,11 +367,12 @@ class UsageEngine:
             w5_e = float(five_hour_start)
         w7_e = now_e - 7 * 24 * 3600
         d30_e = now_e - 30 * 24 * 3600
-        h48_e = now_e - 48 * 3600
+        h48_e = now_e - _VELOCITY_HOURS * 3600
 
         today, last5, week, allt = _blank(), _blank(), _blank(), _blank()
         by_model, by_project, by_day, by_session = {}, {}, {}, {}
         hourly = {}
+        recent = []             # (epoch, cost, tokens) within 48h, for _velocity
         first5_e = None
         latest = None
 
@@ -357,10 +411,12 @@ class UsageEngine:
                 day = datetime.fromtimestamp(e).strftime("%Y-%m-%d")
                 _add(by_day.setdefault(day, _blank()), r)
             if e >= h48_e:
+                tk = sum(r["tokens"].values())
                 hk = int(e // 3600 * 3600)
                 h = hourly.setdefault(hk, {"cost": 0.0, "tokens": 0})
                 h["cost"] += r["cost"]
-                h["tokens"] += sum(r["tokens"].values())
+                h["tokens"] += tk
+                recent.append((e, r["cost"], tk))
 
         # 5h burn / projection
         if anchored:
@@ -385,6 +441,8 @@ class UsageEngine:
         for hk in range(base - 47 * 3600, base + 3600, 3600):
             h = hourly.get(hk, {"cost": 0.0, "tokens": 0})
             series.append({"epoch": hk, "cost": h["cost"], "tokens": h["tokens"]})
+
+        velocity = _velocity(recent, now_e)
 
         idle = (now_e - latest["epoch"]) if latest else None
         active = {
@@ -433,6 +491,7 @@ class UsageEngine:
             "by_project": rank(by_project, "project"),
             "by_day": days,
             "hourly_48h": series,
+            "velocity": velocity,
             "sessions": sessions[:12],
             "active": active,
         }

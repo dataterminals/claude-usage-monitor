@@ -127,6 +127,30 @@
   .bm-spark svg { height:100%; }
   .bm-cap { color:var(--faint); font-size:9px; }
   .bm-stat { display:flex; flex-direction:column; margin-top:7px; }
+
+  /* The tachometer — "how fast right now", next to the ledger's "how much so
+     far". A half-dial rather than another bar: the bars say how full, this
+     says how fast, and a different shape keeps the two from reading alike. */
+  .burnWide { display:flex; gap:18px; align-items:flex-start; }
+  .burnWide .rows { flex:1; min-width:0; }
+  .tach { flex:none; width:150px; text-align:center; }
+  .tach svg { width:100%; height:auto; overflow:visible; }
+  .tach .track { fill:none; stroke:var(--panel2); stroke-width:9; stroke-linecap:round; }
+  .tach .sweep { fill:none; stroke-width:9; stroke-linecap:round; transition:stroke-dashoffset .5s ease, stroke .5s ease; }
+  .tach .needle { stroke:var(--ink); stroke-width:2; stroke-linecap:round; transition:transform .5s ease; transform-origin:60px 60px; }
+  .tach .hub { fill:var(--ink); }
+  .tach .tick { stroke:var(--faint); stroke-width:1; }
+  .tach .redline { stroke:var(--bad); stroke-width:2; opacity:.8; }
+  /* t- prefixed: the header's own .sub is display:none below 440px. */
+  .tach .t-lead { font-size:19px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; margin-top:-10px; }
+  .tach .t-lead .unit { font-size:11px; color:var(--dim); font-weight:500; }
+  .tach .t-sub { color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
+  .tach .t-lbl { color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:.5px; margin-top:4px; }
+  .tach .t-lbl b { color:var(--dim); font-weight:600; }
+  @media (max-width:439px){
+    .burnWide { flex-direction:column; align-items:stretch; gap:10px; }
+    .tach { width:140px; margin:0 auto; }
+  }
   .bm-lbl { color:var(--dim); font-size:9px; text-transform:uppercase; letter-spacing:.4px; }
   .bm-val { font-size:11.5px; font-variant-numeric:tabular-nums; }
 
@@ -159,6 +183,10 @@
     #localBurn { display:none; }
     #burnMin { display:block; }
     #localBurnCard h2 { font-size:9.5px; margin:0 0 7px; }
+    .tach { width:100%; max-width:120px; margin:0 auto; }
+    .tach .t-lead { font-size:17px; margin-top:-7px; }
+    .tach .t-sub { font-size:10px; }
+    .tach .t-lbl { font-size:8.5px; margin-top:2px; }
     /* Details cannot survive this width, so pin Limits on regardless of the
        last tab click — which may well have left #tab-limits carrying .hidden. */
     #tab-details { display:none !important; }
@@ -220,10 +248,18 @@
     .bm-lead { font-size:17px; }
     .bm-val { font-size:10.5px; }
     .bm-sub { font-size:9.5px; }
+    .tach .t-lead { font-size:14px; margin-top:-6px; }
+    .tach .t-sub { font-size:9px; }
+    .tach .t-lbl { display:none; }
   }
 
   /* Backstop for a short screen: fitToViewport() steps through these until the
      page fits, so a 90px-wide strip never grows a scrollbar. */
+  /* First step: the dial goes and the tachometer folds back to its number —
+     the two lines the panel led with before it grew a dial — so a short strip
+     keeps its burn card a step longer. */
+  .squeeze-0 .tach svg, .squeeze-0 .tach .t-lbl { display:none; }
+  .squeeze-0 .tach .t-lead { margin-top:0; }
   .squeeze-1 .note, .squeeze-1 #localBurnCard, .squeeze-1 .pacer .why { display:none; }
   .squeeze-1 .gauge .day .row:not(.d-left) { display:none; }
   .squeeze-2 .gauge .day, .squeeze-2 .tabs, .squeeze-2 #heroCard { display:none; }
@@ -263,7 +299,7 @@
     <div id="gaugeHost"></div>
     <section class="card" id="localBurnCard">
       <h2><span class="name-full">Local burn — self-tracked</span><span class="name-min">BURN</span></h2>
-      <div class="rows" id="localBurn"></div>
+      <div class="burnWide" id="localBurn"></div>
       <div id="burnMin"></div>
     </section>
   </div>
@@ -582,14 +618,60 @@ function renderLimits(usage, quota){
   }
 
   const cachePct = (()=>{ const t=b.input+b.cache_read+b.cache_write_5m+b.cache_write_1h; return t?Math.round(100*b.cache_read/t):0; })();
-  el("localBurn").innerHTML = `
+  el("localBurn").innerHTML = tach(usage.velocity) + `<div class="rows">
     <div class="row"><span class="k">${b.label} — tokens</span><span class="v mono">${F.tok(b.tokens_total)}</span></div>
     <div class="row"><span class="k">${b.label} — notional cost</span><span class="v mono">${F.money(b.cost)}</span></div>
-    <div class="row"><span class="k">Burn rate</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(b.tokens_total/Math.max(b.elapsed_hours,0.05))}/h</span></div>
+    <div class="row"><span class="k">Block average</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(b.tokens_total/Math.max(b.elapsed_hours,0.05))}/h</span></div>
     <div class="row"><span class="k">Projected full 5h</span><span class="v mono">${F.money(b.projected_cost)}</span></div>
     <div class="row"><span class="k">Cache hit</span><span class="v mono">${cachePct}%</span></div>
-    <div class="row"><span class="k">Last 7 days</span><span class="v mono">${F.money(usage.windows.week_7d.cost)} · ${F.tok(usage.windows.week_7d.tokens_total)}</span></div>`;
+    <div class="row"><span class="k">Last 7 days</span><span class="v mono">${F.money(usage.windows.week_7d.cost)} · ${F.tok(usage.windows.week_7d.tokens_total)}</span></div>
+  </div>`;
   renderBurnMin(usage);
+}
+
+// The tachometer. Needle and sweep are the current rate as a fraction of the
+// fastest pace in the last 48 hours (the redline), so the dial is scaled to
+// you, not to a constant: pinned means "as hard as you ever push", a quarter
+// means a quarter of that. The rate itself is engine.py's exponentially
+// weighted one (tau = 10 min) — it lands the moment a request does and
+// actually falls off when you stop, which the block average never will.
+const TACH_ARC = 240;                              // degrees of dial
+function tach(v){
+  if(!v) return "";
+  const rate = v.cost_per_hour || 0, peak = v.peak_cost_per_hour || 0;
+  const frac = peak > 0 ? Math.max(0, Math.min(1, rate / peak)) : 0;
+  const R = 46, cx = 60, cy = 60;
+  const a0 = 90 + (360 - TACH_ARC) / 2;            // start angle (deg, clockwise from +x)
+  const pt = (deg, r) => { const t = deg * Math.PI / 180; return [cx + r*Math.cos(t), cy + r*Math.sin(t)]; };
+  const arc = (from, to) => { const [x1,y1] = pt(from, R), [x2,y2] = pt(to, R);
+    return `M${x1.toFixed(2)} ${y1.toFixed(2)} A${R} ${R} 0 ${to-from > 180 ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`; };
+  const len = TACH_ARC * Math.PI / 180 * R;         // full sweep length, for the dash trick
+  let ticks = "";
+  for(let i = 0; i <= 4; i++){
+    const [x1,y1] = pt(a0 + TACH_ARC*i/4, R-9), [x2,y2] = pt(a0 + TACH_ARC*i/4, R-13);
+    ticks += `<line class="tick" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  }
+  const [rx1,ry1] = pt(a0 + TACH_ARC, R+7), [rx2,ry2] = pt(a0 + TACH_ARC, R-7);
+  const col = color(frac * 100);
+  const idle = rate < 0.005;
+  const tokLine = idle ? "idle" : `${F.tok(v.tokens_per_hour)} tok/h`;
+  const peakLine = peak > 0 && v.peak_epoch
+    ? `peak <b>${F.money(peak)}/h</b> · ${F.at(v.peak_epoch)}` : "no history yet";
+  return `<div class="tach" title="right now, weighted over the last ~${Math.round(v.tau_seconds/60)} min; the dial's end is your fastest pace in the last ${v.window_hours}h">
+    <svg viewBox="0 0 120 84">
+      <path class="track" d="${arc(a0, a0 + TACH_ARC)}"/>
+      <path class="sweep" d="${arc(a0, a0 + TACH_ARC)}" stroke="${col}"
+        stroke-dasharray="${len.toFixed(2)}" stroke-dashoffset="${(len * (1 - frac)).toFixed(2)}"/>
+      ${ticks}
+      <line class="redline" x1="${rx1.toFixed(1)}" y1="${ry1.toFixed(1)}" x2="${rx2.toFixed(1)}" y2="${ry2.toFixed(1)}"/>
+      <line class="needle" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy - R + 8}"
+        style="transform:rotate(${(a0 - 270 + TACH_ARC * frac).toFixed(1)}deg)"/>
+      <circle class="hub" cx="${cx}" cy="${cy}" r="3"/>
+    </svg>
+    <div class="t-lead">${F.money(rate)}<span class="unit">/h</span></div>
+    <div class="t-sub">${tokLine}</div>
+    <div class="t-lbl">now · ${peakLine}</div>
+  </div>`;
 }
 
 // The strip's burn panel. Same numbers as the wide ledger, restacked: at this
@@ -600,11 +682,10 @@ function renderBurnMin(usage){
   if(!host) return;
   const b = usage.windows.rolling_5h;
   const tokPerH = b.tokens_total / Math.max(b.elapsed_hours, 0.05);
-  host.innerHTML = `
-    <div class="bm-lead">${F.money(b.burn_cost_per_hour)}<span class="bm-unit">/h</span></div>
-    <div class="bm-sub">${F.tok(tokPerH)} tok/h</div>
+  host.innerHTML = tach(usage.velocity) + `
     <div class="bm-spark" id="burnSpark"></div>
     <div class="bm-cap" id="burnCap"></div>
+    <div class="bm-stat"><span class="bm-lbl">5h average</span><span class="bm-val">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(tokPerH)}/h</span></div>
     <div class="bm-stat"><span class="bm-lbl">5h spent</span><span class="bm-val">${F.money(b.cost)} · ${F.tok(b.tokens_total)}</span></div>
     <div class="bm-stat"><span class="bm-lbl">projected 5h</span><span class="bm-val">${F.money(b.projected_cost)}</span></div>
     <div class="bm-stat"><span class="bm-lbl">last 7 days</span><span class="bm-val">${F.money(usage.windows.week_7d.cost)}</span></div>`;
@@ -670,9 +751,9 @@ function renderSessions(d){ let rows="";
 
 // No-scrollbar backstop. The collapse tiers are built to fit a full-height
 // strip, but a short screen — or a "resume Thu 3:40 PM" that wraps — can still
-// push past the viewport. Step down two extra density levels rather than let a
-// scrollbar appear in a 90px-wide window.
-const SQUEEZE = ["squeeze-1", "squeeze-2"];
+// push past the viewport. Step down three extra density levels rather than let
+// a scrollbar appear in a 90px-wide window.
+const SQUEEZE = ["squeeze-0", "squeeze-1", "squeeze-2"];
 // Only the collapsed tiers trade content for a scrollbar. At the default
 // 480x900 the full page is ~990px tall, and dropping the burn ledger to save
 // 90px of scrolling is a bad trade — above this width, let it scroll.

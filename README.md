@@ -26,8 +26,10 @@ which is **read-only** unless you explicitly ask it to refresh your token.
   bar marks where an even spend would sit right now, so overshoot is visible.
 - **Today's allowance** under the weekly gauge: `100/7 = 14.3%` per day, how much
   of it you've used, and how far ahead of (or behind) the weekly line you are.
-- A self-tracked burn panel (rolling-5h tokens/cost, burn rate, projection,
-  cache-hit %, 7-day total) that works even when the live bars aren't connected.
+- A self-tracked burn panel: a **tachometer** for how fast you're spending
+  *right now*, next to the 5-hour block's tokens/cost, its average rate, the
+  projection, cache-hit %, and the 7-day total. Works even when the live bars
+  aren't connected. See [Two burn rates](#two-burn-rates).
 
 **Details tab:** notional cost KPIs (today / 5h / week / all-time), a 48-hour
 activity sparkline, 30-day cost bars, by-model and by-project tables, and recent
@@ -156,10 +158,10 @@ Times come from pacing's `reset_epoch`, falling back to the raw limit's
 ### The burn panel
 
 Docked full-height, the strip runs out of things to say long before it runs out
-of screen, so the space under the gauges goes to burn tracking: live `$/h` and
-`tok/h`, then the 48-hour history, then 5h spent, projected 5h, and the 7-day
-total. Same numbers as the wide ledger, restacked label-over-value because at
-110px a label and its number cannot share a line.
+of screen, so the space under the gauges goes to burn tracking: the tachometer,
+then the 48-hour history, then the 5h average, 5h spent, projected 5h, and the
+7-day total. Same numbers as the wide ledger, restacked label-over-value because
+at 110px a label and its number cannot share a line.
 
 The history chart is **rotated** — one row per hour running down the column,
 bar length is that hour's spend, most recent at the bottom in the accent colour,
@@ -173,8 +175,36 @@ capped so rows stay around 10px — past that it is just tall, not more legible.
 settle the density against that, then spend what is left. Measuring a chart that
 still holds the last pass's height makes the fit backstop squeeze for nothing.
 
-The panel is the first thing `squeeze-1` drops, so on a short window the gauges
-and the pacing answer still win.
+### Two burn rates
+
+The ledger's **block average** is the 5-hour block's spend divided by the block's
+age. That is the right number for *"what will these five hours cost"* (the
+projection is just that times five) and the wrong one for *"how fast am I going"*:
+an hour after your last request it has barely moved, because its numerator is
+frozen while its denominator grows a minute per minute. Spend $10 in the first
+hour and it reads $10/h; sit idle for an hour and it reads $5/h; another hour
+and $3.33/h. It never reaches zero inside the block.
+
+The **tachometer** is the other number. Every request in the last 48 hours
+contributes its cost times `e^(-age/τ)` with `τ = 10 min`, and that sum over `τ`
+is a rate:
+
+- steady spending at `$R/h` converges on `R`;
+- a lone $2 request reads as `$12/h` the moment it lands;
+- an idle stretch decays it — a third left after ten minutes, a twentieth after
+  thirty, effectively zero within the hour.
+
+The dial's end (the red mark) is your own fastest pace in those 48 hours, so it
+is scaled to you rather than to a constant: pinned means *as hard as you ever
+push*, a quarter means a quarter of that. The peak and when it happened sit
+under the dial. The rate jumps only at a request and decays between them, so its
+maximum is at a request time, and one ordered pass with a running decayed sum
+finds both the current reading and the peak (`engine._velocity`). Check it with
+`python test_velocity.py`.
+
+On a short window the dial is the first thing to go: `squeeze-0` folds the
+tachometer back to its number and `tok/h`, and only then does `squeeze-1` drop
+the whole panel, so the gauges and the pacing answer still win.
 
 `_MIN` in `window.py` is `72 x 240`, deliberately below anything the full layout
 tolerates so that hand-dragging is governed by the CSS tiers. It is not the real
@@ -285,6 +315,7 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
+| `test_velocity.py` | Self-check for the tachometer's rate (`python test_velocity.py`): what one request reads as, how it decays, convergence, where the peak sits, and that it falls during an idle hour while the block average sits. Offline. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |
