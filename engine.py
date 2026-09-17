@@ -39,9 +39,9 @@ _CACHE_VERSION = 2
 # snapshot(), so reject it at parse time instead.
 _MIN_EPOCH = 946684800.0                    # 2000-01-01
 _MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
-# The "right now" rate (see _velocity): what landed in the last ten minutes,
+# The "right now" rate (see _velocity): what landed in the last five minutes,
 # as an hourly figure.
-_VELOCITY_WINDOW = 600.0
+_VELOCITY_WINDOW = 300.0
 _VELOCITY_HOURS = 48
 
 
@@ -86,14 +86,14 @@ def _velocity(recent, now_e, window=_VELOCITY_WINDOW):
     the wrong one for "how fast am I going": an hour after the last request it
     has barely moved, because its numerator is frozen while its denominator
     grows a minute per minute. This is the other number: what landed in the
-    last `window` seconds (ten minutes), as an hourly rate. A lone $2 request
-    reads as $12/h the moment it lands and for the ten minutes after, then
-    drops out; steady spending at $R/h reads R once the box is full; ten
+    last `window` seconds (five minutes), as an hourly rate. A lone $2 request
+    reads as $24/h the moment it lands and for the five minutes after, then
+    drops out; steady spending at $R/h reads R once the box is full; five
     minutes after the last request the reading is zero. A plain box rather
     than a decaying kernel because it says exactly what it measures.
 
     Also the peak of that reading across the 48-hour window, so a gauge has a
-    scale that is your own fastest ten minutes rather than a magic number. The
+    scale that is your own fastest five minutes rather than a magic number. The
     reading only rises when a request lands and falls as older ones age out,
     so its maximum sits at a request time, and one ordered pass with a sliding
     box finds it. `recent` is (epoch, cost, tokens) tuples in any order.

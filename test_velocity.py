@@ -4,8 +4,8 @@ No framework and no dependencies, like the other self-checks. Offline: the
 engine is built on an empty temp projects dir and fed hand-made records, so
 nothing here reads a transcript or the cache.
 
-The velocity is a plain ten-minute box (engine._velocity): what landed in the
-last ten minutes, as an hourly rate. The properties worth pinning are the ones
+The velocity is a plain five-minute box (engine._velocity): what landed in the
+last five minutes, as an hourly rate. The properties worth pinning are the ones
 a reader would reach for to sanity-check the dial: what one request reads as
 the moment it lands, when it drops out, that a full box reads the true rate,
 where the peak sits, and — the reason it exists — that it reads zero during an
@@ -30,8 +30,8 @@ def check(name, got, want, tol=1e-6):
         fails.append(name)
 
 
-WIN = engine._VELOCITY_WINDOW       # 600 s
-PER_H = 3600.0 / WIN                # a $1 request in the box reads as $6/h
+WIN = engine._VELOCITY_WINDOW       # 300 s
+PER_H = 3600.0 / WIN                # a $1 request in the box reads as $12/h
 
 
 def rec(epoch, cost, tokens=1000, model="claude-opus-5"):
@@ -53,15 +53,15 @@ def main():
     check("  no peak time", v["peak_epoch"], None)
 
     v = engine._velocity([(now, 2.0, 1000)], now)
-    check("$2 just landed reads as $12/h", v["cost_per_hour"], 2.0 * PER_H)
-    check("  1000 tok just landed reads as 6000 tok/h", v["tokens_per_hour"], 1000 * PER_H)
+    check("$2 just landed reads as $24/h", v["cost_per_hour"], 2.0 * PER_H)
+    check("  1000 tok just landed reads as 12000 tok/h", v["tokens_per_hour"], 1000 * PER_H)
     check("  and it is its own peak", v["peak_cost_per_hour"], 2.0 * PER_H)
     check("  peaked at its own time", v["peak_epoch"], now)
 
     v = engine._velocity([(now - WIN + 1, 2.0, 1000)], now)
-    check("a second short of ten minutes: still $12/h", v["cost_per_hour"], 2.0 * PER_H)
+    check("a second short of five minutes: still $24/h", v["cost_per_hour"], 2.0 * PER_H)
     v = engine._velocity([(now - WIN, 2.0, 1000)], now)
-    check("ten minutes on the dot: dropped out", v["cost_per_hour"], 0.0)
+    check("five minutes on the dot: dropped out", v["cost_per_hour"], 0.0)
     check("  the peak remembers it", v["peak_cost_per_hour"], 2.0 * PER_H)
     check("  and when", v["peak_epoch"], now - WIN)
     v = engine._velocity([(now - 5 * 3600, 2.0, 1000)], now)
@@ -70,13 +70,13 @@ def main():
     v = engine._velocity([(now + 60, 2.0, 1000)], now)
     check("a record stamped in the future counts as just landed",
           v["cost_per_hour"], 2.0 * PER_H)
-    v = engine._velocity([(now - 500, 1.0, 100), (now + 200, 1.0, 100)], now)
-    check("  and does not push a 500s-old request out of now's box",
+    v = engine._velocity([(now - 200, 1.0, 100), (now + 100, 1.0, 100)], now)
+    check("  and does not push a 200s-old request out of now's box",
           v["cost_per_hour"], 2.0 * PER_H)
 
     print("\n[2] a full box reads the true rate")
     # $1 a minute for three hours is $60/h. Read at the last request the box
-    # holds exactly ten of them — no discretization fudge, the point of a box.
+    # holds exactly five of them — no discretization fudge, the point of a box.
     recs = [(now - 60 * k, 1.0, 1000) for k in range(180)]
     v = engine._velocity(recs, now)
     check("$1/min for 3h, read at the last request: $60/h", v["cost_per_hour"], 60.0)
@@ -85,9 +85,9 @@ def main():
     v = engine._velocity(recs, now + 30)
     check("half a minute later: still $60/h, nothing has aged out", v["cost_per_hour"], 60.0)
     v = engine._velocity(recs, now + 60)
-    check("a minute later: the oldest is out, $54/h", v["cost_per_hour"], 54.0)
+    check("a minute later: the oldest is out, $48/h", v["cost_per_hour"], 48.0)
 
-    print("\n[3] the peak is the fastest ten minutes in the window, not the latest")
+    print("\n[3] the peak is the fastest five minutes in the window, not the latest")
     burst_at = now - 2 * 3600
     recs = [(burst_at, 5.0, 5000), (now, 0.5, 500)]
     v = engine._velocity(recs, now)
@@ -101,12 +101,12 @@ def main():
     v = engine._velocity(recs, now)
     check("back-to-back requests stack", v["cost_per_hour"], 2.0 * PER_H)
     check("  and the stacked reading is the peak", v["peak_epoch"], now)
-    # Eleven minutes apart they never share one: the peak is either, first wins.
-    recs = [(now - 660, 1.0, 0), (now, 1.0, 0)]
+    # Six minutes apart they never share one: the peak is either, first wins.
+    recs = [(now - 360, 1.0, 0), (now, 1.0, 0)]
     v = engine._velocity(recs, now)
-    check("eleven minutes apart they do not stack", v["cost_per_hour"], 1.0 * PER_H)
+    check("six minutes apart they do not stack", v["cost_per_hour"], 1.0 * PER_H)
     check("  peak is a single request", v["peak_cost_per_hour"], 1.0 * PER_H)
-    check("  the earlier one, on a tie", v["peak_epoch"], now - 660)
+    check("  the earlier one, on a tie", v["peak_epoch"], now - 360)
 
     print("\n[4] through snapshot(): the dial reads zero while the block average sits")
     tmp = tempfile.mkdtemp(prefix="velocity-")
@@ -120,7 +120,7 @@ def main():
         snap = eng.snapshot(now=at, five_hour_start=block)
         b, v = snap["windows"]["rolling_5h"], snap["velocity"]
         check("at the last request: block average $66.7/h", b["burn_cost_per_hour"], 10.0 / (9 / 60.0), 1e-6)
-        check("  velocity holds all ten: $60/h", v["cost_per_hour"], 60.0, 1e-6)
+        check("  velocity holds the last five: $60/h", v["cost_per_hour"], 60.0, 1e-6)
         check("  which is the peak", v["peak_cost_per_hour"], 60.0, 1e-6)
 
         at = datetime.fromtimestamp(now, timezone.utc)

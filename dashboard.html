@@ -632,9 +632,9 @@ function renderLimits(usage, quota){
 // The tachometer. Needle and sweep are the current rate as a fraction of the
 // fastest pace in the last 48 hours (the redline), so the dial is scaled to
 // you, not to a constant: pinned means "as hard as you ever push", a quarter
-// means a quarter of that. The rate itself is engine.py's ten-minute box —
-// what landed in the last ten minutes, as an hourly figure. It jumps the moment
-// a request lands and reads zero ten minutes after the last one, which the
+// means a quarter of that. The rate itself is engine.py's five-minute box —
+// what landed in the last five minutes, as an hourly figure. It jumps the moment
+// a request lands and reads zero five minutes after the last one, which the
 // block average never will.
 const TACH_ARC = 240;                              // degrees of dial
 function tach(v){
@@ -655,10 +655,15 @@ function tach(v){
   const [rx1,ry1] = pt(a0 + TACH_ARC, R+7), [rx2,ry2] = pt(a0 + TACH_ARC, R-7);
   const col = color(frac * 100);
   const idle = rate < 0.005;
+  // The literal amount too, for the hover: the box is short enough that "$3.20
+  // in the last 5 min" is the number you'd otherwise work out in your head.
+  const mins = Math.round(v.window_seconds / 60), spent = rate * v.window_seconds / 3600;
+  const tip = (idle ? `nothing in the last ${mins} min` : `${F.money(spent)} in the last ${mins} min, ${F.money(rate)}/h`)
+    + `; the dial's end is your fastest ${mins} minutes in the last ${v.window_hours}h`;
   const tokLine = idle ? "idle" : `${F.tok(v.tokens_per_hour)} tok/h`;
   const peakLine = peak > 0 && v.peak_epoch
     ? `peak <b>${F.money(peak)}/h</b> · ${F.at(v.peak_epoch)}` : "no history yet";
-  return `<div class="tach" title="spend in the last ${Math.round(v.window_seconds/60)} min as an hourly rate; the dial's end is your fastest ${Math.round(v.window_seconds/60)} minutes in the last ${v.window_hours}h">
+  return `<div class="tach" title="${tip}">
     <svg viewBox="0 0 120 84">
       <path class="track" d="${arc(a0, a0 + TACH_ARC)}"/>
       <path class="sweep" d="${arc(a0, a0 + TACH_ARC)}" stroke="${col}"

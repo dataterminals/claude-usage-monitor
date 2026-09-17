@@ -185,16 +185,16 @@ frozen while its denominator grows a minute per minute. Spend $10 in the first
 hour and it reads $10/h; sit idle for an hour and it reads $5/h; another hour
 and $3.33/h. It never reaches zero inside the block.
 
-The **tachometer** is the other number: what landed in the last ten minutes, as
+The **tachometer** is the other number: what landed in the last five minutes, as
 an hourly rate. A plain box rather than a decaying average, on purpose — it says
 exactly what it measures:
 
 - steady spending at `$R/h` reads `R` once the box is full;
-- a lone $2 request reads as `$12/h` the moment it lands, and for the ten
+- a lone $2 request reads as `$24/h` the moment it lands, and for the five
   minutes after;
-- ten minutes after your last request the reading is zero.
+- five minutes after your last request the reading is zero.
 
-The dial's end (the red mark) is your own fastest ten minutes in the last 48
+The dial's end (the red mark) is your own fastest five minutes in the last 48
 hours, so it is scaled to you rather than to a constant: pinned means *as hard
 as you ever push*, a quarter means a quarter of that. The peak and when it
 happened sit under the dial. The reading only rises when a request lands and
