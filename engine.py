@@ -39,9 +39,12 @@ _CACHE_VERSION = 2
 # snapshot(), so reject it at parse time instead.
 _MIN_EPOCH = 946684800.0                    # 2000-01-01
 _MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
-# The "right now" rate (see _velocity): what landed in the last five minutes,
-# as an hourly figure.
-_VELOCITY_WINDOW = 300.0
+# The "right now" rates (see _velocity): what landed in the last five, fifteen
+# and thirty minutes, each as an hourly figure. Three widths rather than one
+# because the shape is the information — five reading above thirty means you
+# are speeding up, five below it means you are easing off, and a single number
+# can say neither. The five-minute box is the "right now" one and leads.
+_VELOCITY_WINDOWS = (300.0, 900.0, 1800.0)
 _VELOCITY_HOURS = 48
 
 
@@ -78,7 +81,7 @@ def _num(v):
     return int(v) if v > 0 else 0
 
 
-def _velocity(recent, now_e, window=_VELOCITY_WINDOW):
+def _velocity(recent, now_e, window=_VELOCITY_WINDOWS[0]):
     """The rate right now, as distinct from the block's average.
 
     `rolling_5h.burn_cost_per_hour` divides the block's spend by the block's
@@ -86,14 +89,17 @@ def _velocity(recent, now_e, window=_VELOCITY_WINDOW):
     the wrong one for "how fast am I going": an hour after the last request it
     has barely moved, because its numerator is frozen while its denominator
     grows a minute per minute. This is the other number: what landed in the
-    last `window` seconds (five minutes), as an hourly rate. A lone $2 request
-    reads as $24/h the moment it lands and for the five minutes after, then
-    drops out; steady spending at $R/h reads R once the box is full; five
-    minutes after the last request the reading is zero. A plain box rather
-    than a decaying kernel because it says exactly what it measures.
+    last `window` seconds — five, fifteen or thirty minutes — as an hourly
+    rate. In the five-minute box a lone $2 request reads as $24/h the moment it
+    lands and for the five minutes after, then drops out; steady spending at
+    $R/h reads R once the box is full, whatever the box's width; a box-length
+    after the last request the reading is zero. A plain box rather than a
+    decaying kernel because it says exactly what it measures.
 
     Also the peak of that reading across the 48-hour window, so a gauge has a
-    scale that is your own fastest five minutes rather than a magic number. The
+    scale that is your own fastest stretch of that width rather than a magic
+    number. A wider box can never peak higher than a narrower one, since its
+    rate is an average of the narrower boxes inside it. The
     reading only rises when a request lands and falls as older ones age out,
     so its maximum sits at a request time, and one ordered pass with a sliding
     box finds it. `recent` is (epoch, cost, tokens) tuples in any order.
@@ -446,7 +452,11 @@ class UsageEngine:
             h = hourly.get(hk, {"cost": 0.0, "tokens": 0})
             series.append({"epoch": hk, "cost": h["cost"], "tokens": h["tokens"]})
 
-        velocity = _velocity(recent, now_e)
+        # One entry per width, narrowest first, so the dashboard can draw a dial
+        # each. Sorted once here rather than three times: _velocity sorts what it
+        # is given, and sorting an already-sorted list is linear.
+        recent.sort(key=lambda r: r[0])
+        velocity = [_velocity(recent, now_e, w) for w in _VELOCITY_WINDOWS]
 
         idle = (now_e - latest["epoch"]) if latest else None
         active = {

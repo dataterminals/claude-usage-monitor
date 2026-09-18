@@ -26,10 +26,11 @@ which is **read-only** unless you explicitly ask it to refresh your token.
   bar marks where an even spend would sit right now, so overshoot is visible.
 - **Today's allowance** under the weekly gauge: `100/7 = 14.3%` per day, how much
   of it you've used, and how far ahead of (or behind) the weekly line you are.
-- A self-tracked burn panel: a **tachometer** for how fast you're spending
-  *right now*, next to the 5-hour block's tokens/cost, its average rate, the
-  projection, cache-hit %, and the 7-day total. Works even when the live bars
-  aren't connected. See [Two burn rates](#two-burn-rates).
+- A self-tracked burn panel: three **tachometers** for how fast you're spending
+  *right now* — the last 5, 15 and 30 minutes, on one shared scale — next to the
+  5-hour block's tokens/cost, its average rate, the projection, cache-hit %, and
+  the 7-day total. Works even when the live bars aren't connected. See
+  [Two burn rates](#two-burn-rates).
 
 **Details tab:** notional cost KPIs (today / 5h / week / all-time), a 48-hour
 activity sparkline, 30-day cost bars, by-model and by-project tables, and recent
@@ -158,22 +159,26 @@ Times come from pacing's `reset_epoch`, falling back to the raw limit's
 ### The burn panel
 
 Docked full-height, the strip runs out of things to say long before it runs out
-of screen, so the space under the gauges goes to burn tracking: the tachometer,
-then the 48-hour history, then the 5h average, 5h spent, projected 5h, and the
-7-day total. Same numbers as the wide ledger, restacked label-over-value because
-at 110px a label and its number cannot share a line.
+of screen, so the space under the gauges goes to burn tracking: the three
+tachometers, stacked, then the 48-hour history, then the 5h average, 5h spent,
+projected 5h, and the 7-day total. Same numbers as the wide ledger, restacked
+label-over-value because at 110px a label and its number cannot share a line.
 
-The history chart is **rotated** — one row per hour running down the column,
-bar length is that hour's spend, most recent at the bottom in the accent colour,
-with a faint rule every 6 hours. Across 94px of width, 48 vertical bars are 2px
-hairlines; as rows they get ~10px each and read as an actual timeline. Idle
-hours are blank rows, so a quiet night looks quiet.
+The history chart runs **down the column from now**, so it reads on from the
+dials above it: one row per hour that spent anything, with its clock time
+(`4p`), bar length that hour's spend. An idle stretch folds into a single
+`5h idle` line rather than a column of blank rows — ten active hours in 48 used
+to leave the chart 80% empty. Hours inside the current 5-hour block sit above a
+labelled `▲ this 5h block` divider in the accent blue, earlier ones in the
+darker blue; the two blues were checked as an ordinal pair against the panel
+(one hue, stepping lightness, both clearing 3:1), and the divider's words carry
+the split for anyone the colours don't. Crossing into an earlier day adds its
+weekday (`THU`), since `4p` twice would otherwise read as one afternoon. The
+caption names the peak hour and when it was; hovering a row gives its amount.
 
-The chart takes the leftover height rather than a fixed slot (`fillSpark()`),
-capped so rows stay around 10px — past that it is just tall, not more legible.
-`relayout()` runs the whole pass in order: reset the chart to its base height,
-settle the density against that, then spend what is left. Measuring a chart that
-still holds the last pass's height makes the fit backstop squeeze for nothing.
+The chart sizes to its rows. It used to stretch into whatever height the strip
+had left, which made 48 unlabelled rows taller but never more legible, so
+`relayout()` is now just the density pass.
 
 ### Two burn rates
 
@@ -185,26 +190,35 @@ frozen while its denominator grows a minute per minute. Spend $10 in the first
 hour and it reads $10/h; sit idle for an hour and it reads $5/h; another hour
 and $3.33/h. It never reaches zero inside the block.
 
-The **tachometer** is the other number: what landed in the last five minutes, as
-an hourly rate. A plain box rather than a decaying average, on purpose — it says
-exactly what it measures:
+The **tachometers** are the other number: what landed in the last five, fifteen
+and thirty minutes, each as an hourly rate. A plain box rather than a decaying
+average, on purpose — it says exactly what it measures:
 
-- steady spending at `$R/h` reads `R` once the box is full;
-- a lone $2 request reads as `$24/h` the moment it lands, and for the five
-  minutes after;
-- five minutes after your last request the reading is zero.
+- steady spending at `$R/h` reads `R` once a box is full, whatever its width;
+- a lone $2 request reads as `$24/h` on the five-minute dial the moment it
+  lands, and for the five minutes after — `$8/h` on the fifteen, `$4/h` on the
+  thirty;
+- a box-length after your last request, that dial reads zero.
 
-The dial's end (the red mark) is your own fastest five minutes in the last 48
-hours, so it is scaled to you rather than to a constant: pinned means *as hard
-as you ever push*, a quarter means a quarter of that. The peak and when it
-happened sit under the dial. The reading only rises when a request lands and
-falls as older ones age out, so its maximum is at a request time, and one
-ordered pass with a sliding box finds both the current reading and the peak
-(`engine._velocity`). Check it with `python test_velocity.py`.
+All three dials share one end mark (the red redline): your own fastest *five*
+minutes in the last 48 hours. So they are scaled to you rather than to a
+constant — pinned means *as hard as you ever push* — and, because the scale is
+shared, the three needles compare directly and read as a **shape**: the
+five-minute needle above the thirty means you are speeding up, below it means
+you are easing off. A wider box can never reach the narrow one's peak, since its
+rate is an average of the narrower boxes inside it, so the thirty-minute needle
+sitting lower is the honest reading, not a scaling fault. The redline's value
+and when it happened sit under the first dial; each dial's hover gives the
+literal amount in its box.
 
-On a short window the dial is the first thing to go: `squeeze-0` folds the
-tachometer back to its number and `tok/h`, and only then does `squeeze-1` drop
-the whole panel, so the gauges and the pacing answer still win.
+The reading only rises when a request lands and falls as older ones age out, so
+its maximum is at a request time, and one ordered pass with a sliding box finds
+both the current reading and the peak (`engine._velocity`, called once per width
+over a list sorted once). Check it with `python test_velocity.py`.
+
+On a short window the dials are the first thing to go: `squeeze-0` folds the
+tachometers back to their numbers, and only then does `squeeze-1` drop the whole
+panel, so the gauges and the pacing answer still win.
 
 `_MIN` in `window.py` is `72 x 240`, deliberately below anything the full layout
 tolerates so that hand-dragging is governed by the CSS tiers. It is not the real
@@ -315,7 +329,7 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
-| `test_velocity.py` | Self-check for the tachometer's rate (`python test_velocity.py`): what one request reads as, when it drops out, a full box, where the peak sits, and that it reads zero during an idle hour while the block average sits. Offline. |
+| `test_velocity.py` | Self-check for the tachometers' rates (`python test_velocity.py`): what one request reads as, when it drops out, a full box, where the peak sits, that the same burst reads lower the wider the box, and that every box reads zero during an idle hour while the block average sits. Offline. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
 | `window.py` | Native desktop window (pywebview / Edge WebView2) hosting the dashboard. Owns the GUI loop; hides-on-close so reopen is instant. |

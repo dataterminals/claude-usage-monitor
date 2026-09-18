@@ -4,12 +4,17 @@ No framework and no dependencies, like the other self-checks. Offline: the
 engine is built on an empty temp projects dir and fed hand-made records, so
 nothing here reads a transcript or the cache.
 
-The velocity is a plain five-minute box (engine._velocity): what landed in the
-last five minutes, as an hourly rate. The properties worth pinning are the ones
-a reader would reach for to sanity-check the dial: what one request reads as
-the moment it lands, when it drops out, that a full box reads the true rate,
-where the peak sits, and — the reason it exists — that it reads zero during an
-idle hour while the 5-hour block average barely moves.
+The velocity is a plain box (engine._velocity): what landed in the last five,
+fifteen or thirty minutes, as an hourly rate. The properties worth pinning are
+the ones a reader would reach for to sanity-check a dial: what one request
+reads as the moment it lands, when it drops out, that a full box reads the true
+rate, where the peak sits, and — the reason it exists — that it reads zero
+during an idle hour while the 5-hour block average barely moves.
+
+Blocks [1]-[3] work the narrowest box, since the maths is the same at every
+width. [4] goes through snapshot(), where all three come back at once, and
+pins what only the trio can say: the same spend reads lower the wider the box,
+so a burst sits above the wide ones and an idle stretch flattens them all.
 """
 import os
 import shutil
@@ -30,7 +35,8 @@ def check(name, got, want, tol=1e-6):
         fails.append(name)
 
 
-WIN = engine._VELOCITY_WINDOW       # 300 s
+WINDOWS = engine._VELOCITY_WINDOWS  # (300, 900, 1800) s
+WIN = WINDOWS[0]                    # the "right now" box, 300 s
 PER_H = 3600.0 / WIN                # a $1 request in the box reads as $12/h
 
 
@@ -118,28 +124,44 @@ def main():
 
         at = datetime.fromtimestamp(block + 9 * 60, timezone.utc)   # at the last request
         snap = eng.snapshot(now=at, five_hour_start=block)
-        b, v = snap["windows"]["rolling_5h"], snap["velocity"]
+        b, vs = snap["windows"]["rolling_5h"], snap["velocity"]
+        v = vs[0]
         check("at the last request: block average $66.7/h", b["burn_cost_per_hour"], 10.0 / (9 / 60.0), 1e-6)
         check("  velocity holds the last five: $60/h", v["cost_per_hour"], 60.0, 1e-6)
         check("  which is the peak", v["peak_cost_per_hour"], 60.0, 1e-6)
+        # One dial per width, and the same $10 spread over a wider box is a
+        # lower rate: $5 in five minutes, $10 in fifteen, $10 in thirty.
+        check("a box per width, narrowest first",
+              [x["window_seconds"] for x in vs], list(WINDOWS))
+        check("  the same burst reads lower the wider the box",
+              [round(x["cost_per_hour"], 6) for x in vs], [60.0, 40.0, 20.0])
+        check("  narrow above wide is what speeding up looks like",
+              vs[0]["cost_per_hour"] > vs[-1]["cost_per_hour"], True)
 
         at = datetime.fromtimestamp(now, timezone.utc)
         snap = eng.snapshot(now=at, five_hour_start=block)
-        b, v = snap["windows"]["rolling_5h"], snap["velocity"]
+        b, vs = snap["windows"]["rolling_5h"], snap["velocity"]
+        v = vs[0]
         check("two hours in, idle since: block average still $5/h", b["burn_cost_per_hour"], 5.0, 1e-6)
         check("  velocity reads zero", v["cost_per_hour"], 0.0)
         check("  but the peak is still the burst", v["peak_cost_per_hour"], 60.0, 1e-6)
         check("  window is the 48h one", v["window_hours"], engine._VELOCITY_HOURS)
         check("  the box length is published for the label", v["window_seconds"], WIN)
+        check("  idle flattens every box",
+              [x["cost_per_hour"] for x in vs], [0.0, 0.0, 0.0])
+        check("  each keeping its own peak",
+              [round(x["peak_cost_per_hour"], 6) for x in vs], [60.0, 40.0, 20.0])
 
         # A monster request older than the window must not set the scale.
         eng._records.append(rec(now - 49 * 3600, 100.0))
-        v = eng.snapshot(now=at, five_hour_start=block)["velocity"]
+        v = eng.snapshot(now=at, five_hour_start=block)["velocity"][0]
         check("a $100 request 49h ago does not set the peak", v["peak_cost_per_hour"], 60.0, 1e-6)
         eng._records.append(rec(now - 47 * 3600, 100.0))
-        v = eng.snapshot(now=at, five_hour_start=block)["velocity"]
-        check("one at 47h does", v["peak_cost_per_hour"], 100.0 * PER_H, 1e-6)
-        check("  without moving the current rate", v["cost_per_hour"], 0.0)
+        vs = eng.snapshot(now=at, five_hour_start=block)["velocity"]
+        check("one at 47h does", vs[0]["peak_cost_per_hour"], 100.0 * PER_H, 1e-6)
+        check("  without moving the current rate", vs[0]["cost_per_hour"], 0.0)
+        check("  and it scales every box: $100 is $200/h over thirty minutes",
+              vs[-1]["peak_cost_per_hour"], 100.0 * 3600.0 / WINDOWS[-1], 1e-6)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

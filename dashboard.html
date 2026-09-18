@@ -123,8 +123,24 @@
   .bm-lead { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; }
   .bm-unit { font-size:11px; color:var(--dim); font-weight:500; }
   .bm-sub { color:var(--dim); font-size:10.5px; margin-top:1px; }
-  .bm-spark { height:70px; margin:9px 0 3px; }
-  .bm-spark svg { height:100%; }
+  /* The strip's 48h history (renderMiniSpark): a row per hour that spent
+     something, newest at the top, idle stretches folded to one line. It sizes
+     to its rows; stretching it into the strip's spare height only ever made it
+     emptier. */
+  .bm-spark { margin:10px 0 4px; }
+  .hrs { display:flex; flex-direction:column; gap:2px; }
+  .hr { display:flex; align-items:center; gap:4px; min-height:8px; }
+  .hr .hl { flex:none; width:17px; text-align:right; color:var(--faint); font-size:8px; line-height:8px; font-variant-numeric:tabular-nums; }
+  .hr .hb { flex:1; min-width:0; height:6px; }
+  /* Rounded at the data end only, square at the baseline. The two blues are an
+     ordinal pair — earlier, then this block — checked against --panel. */
+  .hr .hb i { display:block; height:100%; background:#3a6bd6; border-radius:0 3px 3px 0; }
+  .hr.blk .hb i { background:var(--accent); }
+  .hr .hg, .hr .hd { flex:1; min-width:0; font-size:8px; line-height:8px; white-space:nowrap; overflow:hidden; }
+  .hr .hg { color:var(--faint); }
+  .hr.hday .hg { color:var(--dim); font-weight:600; text-transform:uppercase; letter-spacing:.4px; }
+  .hr.hdiv { margin:1px 0 2px; }
+  .hr .hd { color:var(--dim); padding-bottom:2px; border-bottom:1px solid var(--line); }
   .bm-cap { color:var(--faint); font-size:9px; }
   .bm-stat { display:flex; flex-direction:column; margin-top:7px; }
 
@@ -147,9 +163,16 @@
   .tach .t-sub { color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
   .tach .t-lbl { color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:.5px; margin-top:4px; }
   .tach .t-lbl b { color:var(--dim); font-weight:600; }
+  /* Three dials, one per box width, on one shared redline (see tachs()). */
+  .tachs { flex:none; display:flex; gap:6px; }
+  .tachs .tach { width:118px; }
+  /* Under ~120px the token rate wraps onto its own line; the box width is the
+     part of the sub-line that has to survive, so the rate goes first. */
+  @media (max-width:119px){ .tach .t-tok { display:none; } }
   @media (max-width:439px){
     .burnWide { flex-direction:column; align-items:stretch; gap:10px; }
-    .tach { width:140px; margin:0 auto; }
+    .tachs { justify-content:center; }
+    .tachs .tach { width:auto; flex:1 1 0; max-width:118px; }
   }
   .bm-lbl { color:var(--dim); font-size:9px; text-transform:uppercase; letter-spacing:.4px; }
   .bm-val { font-size:11.5px; font-variant-numeric:tabular-nums; }
@@ -183,7 +206,9 @@
     #localBurn { display:none; }
     #burnMin { display:block; }
     #localBurnCard h2 { font-size:9.5px; margin:0 0 7px; }
-    .tach { width:100%; max-width:120px; margin:0 auto; }
+    /* The three dials stack here: the strip's scarce axis is width, not height. */
+    .tachs { flex-direction:column; align-items:center; gap:4px; }
+    .tachs .tach { width:100%; max-width:120px; margin:0 auto; }
     .tach .t-lead { font-size:17px; margin-top:-7px; }
     .tach .t-sub { font-size:10px; }
     .tach .t-lbl { font-size:8.5px; margin-top:2px; }
@@ -618,7 +643,7 @@ function renderLimits(usage, quota){
   }
 
   const cachePct = (()=>{ const t=b.input+b.cache_read+b.cache_write_5m+b.cache_write_1h; return t?Math.round(100*b.cache_read/t):0; })();
-  el("localBurn").innerHTML = tach(usage.velocity) + `<div class="rows">
+  el("localBurn").innerHTML = tachs(usage.velocity) + `<div class="rows">
     <div class="row"><span class="k">${b.label} — tokens</span><span class="v mono">${F.tok(b.tokens_total)}</span></div>
     <div class="row"><span class="k">${b.label} — notional cost</span><span class="v mono">${F.money(b.cost)}</span></div>
     <div class="row"><span class="k">Block average</span><span class="v mono">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(b.tokens_total/Math.max(b.elapsed_hours,0.05))}/h</span></div>
@@ -629,17 +654,27 @@ function renderLimits(usage, quota){
   renderBurnMin(usage);
 }
 
-// The tachometer. Needle and sweep are the current rate as a fraction of the
-// fastest pace in the last 48 hours (the redline), so the dial is scaled to
-// you, not to a constant: pinned means "as hard as you ever push", a quarter
-// means a quarter of that. The rate itself is engine.py's five-minute box —
-// what landed in the last five minutes, as an hourly figure. It jumps the moment
-// a request lands and reads zero five minutes after the last one, which the
+// The tachometers, one per box width: what landed in the last five, fifteen and
+// thirty minutes (engine.py's _velocity), each as an hourly figure. They jump
+// the moment a request lands and fall as it ages out of each box, which the
 // block average never will.
+//
+// All three share one redline — your fastest *five* minutes in the last 48
+// hours — so the needles compare directly and the trio reads as a shape: the
+// narrow dial above the wide ones means you are speeding up, below them means
+// you are easing off. A wider box can never reach the narrow one's peak, since
+// its rate is an average of the narrower boxes inside it, so its needle sitting
+// lower is the honest reading, not a scaling fault.
 const TACH_ARC = 240;                              // degrees of dial
-function tach(v){
+function tachs(vs){
+  if(!vs || !vs.length) return "";
+  const scale = {peak: vs[0].peak_cost_per_hour || 0, at: vs[0].peak_epoch,
+                 mins: Math.round(vs[0].window_seconds / 60)};
+  return `<div class="tachs">${vs.map((v, i) => tach(v, scale, i === 0)).join("")}</div>`;
+}
+function tach(v, scale, lead){
   if(!v) return "";
-  const rate = v.cost_per_hour || 0, peak = v.peak_cost_per_hour || 0;
+  const rate = v.cost_per_hour || 0, peak = scale.peak;
   const frac = peak > 0 ? Math.max(0, Math.min(1, rate / peak)) : 0;
   const R = 46, cx = 60, cy = 60;
   const a0 = 90 + (360 - TACH_ARC) / 2;            // start angle (deg, clockwise from +x)
@@ -659,10 +694,12 @@ function tach(v){
   // in the last 5 min" is the number you'd otherwise work out in your head.
   const mins = Math.round(v.window_seconds / 60), spent = rate * v.window_seconds / 3600;
   const tip = (idle ? `nothing in the last ${mins} min` : `${F.money(spent)} in the last ${mins} min, ${F.money(rate)}/h`)
-    + `; the dial's end is your fastest ${mins} minutes in the last ${v.window_hours}h`;
-  const tokLine = idle ? "idle" : `${F.tok(v.tokens_per_hour)} tok/h`;
-  const peakLine = peak > 0 && v.peak_epoch
-    ? `peak <b>${F.money(peak)}/h</b> · ${F.at(v.peak_epoch)}` : "no history yet";
+    + `; the dial's end is your fastest ${scale.mins} minutes in the last ${v.window_hours}h`;
+  // The box width rides on every dial's sub-line, which survives every tier —
+  // three unlabelled needles would be a guessing game.
+  const sub = `${mins} min` + (idle ? " · idle" : `<span class="t-tok"> · ${F.tok(v.tokens_per_hour)} tok/h</span>`);
+  const peakLine = peak > 0 && scale.at
+    ? `redline <b>${F.money(peak)}/h</b> · ${F.at(scale.at)}` : "no history yet";
   return `<div class="tach" title="${tip}">
     <svg viewBox="0 0 120 84">
       <path class="track" d="${arc(a0, a0 + TACH_ARC)}"/>
@@ -675,8 +712,8 @@ function tach(v){
       <circle class="hub" cx="${cx}" cy="${cy}" r="3"/>
     </svg>
     <div class="t-lead">${F.money(rate)}<span class="unit">/h</span></div>
-    <div class="t-sub">${tokLine}</div>
-    <div class="t-lbl">now · ${peakLine}</div>
+    <div class="t-sub">${sub}</div>
+    ${lead ? `<div class="t-lbl">${peakLine}</div>` : ""}
   </div>`;
 }
 
@@ -688,14 +725,14 @@ function renderBurnMin(usage){
   if(!host) return;
   const b = usage.windows.rolling_5h;
   const tokPerH = b.tokens_total / Math.max(b.elapsed_hours, 0.05);
-  host.innerHTML = tach(usage.velocity) + `
+  host.innerHTML = tachs(usage.velocity) + `
     <div class="bm-spark" id="burnSpark"></div>
     <div class="bm-cap" id="burnCap"></div>
     <div class="bm-stat"><span class="bm-lbl">5h average</span><span class="bm-val">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(tokPerH)}/h</span></div>
     <div class="bm-stat"><span class="bm-lbl">5h spent</span><span class="bm-val">${F.money(b.cost)} · ${F.tok(b.tokens_total)}</span></div>
     <div class="bm-stat"><span class="bm-lbl">projected 5h</span><span class="bm-val">${F.money(b.projected_cost)}</span></div>
     <div class="bm-stat"><span class="bm-lbl">last 7 days</span><span class="bm-val">${F.money(usage.windows.week_7d.cost)}</span></div>`;
-  renderMiniSpark(usage.hourly_48h);
+  renderMiniSpark(usage.hourly_48h, b);
 }
 
 // 48 hourly buckets with time running DOWN the column. The strip has height to
@@ -705,21 +742,54 @@ function renderBurnMin(usage){
 // preserveAspectRatio="none" means one viewBox unit per hour stretches to
 // whatever row height the strip can afford. No axis labels — they would not fit,
 // so the caption carries the scale and the 6-hour rules carry the structure.
-function renderMiniSpark(s){
+// The strip's 48h history, read top-down from now: every hour that spent
+// something is a row with its clock time, and each idle stretch folds into one
+// "Nh idle" line, so no row is spent saying nothing. Hours inside the current
+// 5-hour block sit above a labelled divider in the accent blue, earlier ones
+// in the darker blue — the divider's words carry that, not the colour alone.
+// The widest bar is the peak, named with its hour in the caption; every row
+// gives its amount on hover.
+function renderMiniSpark(s, block){
   const host = el("burnSpark"), cap = el("burnCap");
   if(!host) return;
   if(!s || !s.length){ host.innerHTML = ""; if(cap) cap.textContent = ""; return; }
-  const n = s.length, max = Math.max(1e-9, ...s.map(x => x.cost));
-  let g = "", r = "";
-  for(let i = 6; i < n; i += 6)
-    g += `<rect x="0" y="${i}" width="100" height="0.07" fill="var(--line)"/>`;
-  for(let i = 0; i < n; i++){
-    const w = (s[i].cost / max) * 100;
-    if(w <= 0) continue;                      // an idle hour is a blank row
-    r += `<rect x="0" y="${(i + 0.12).toFixed(2)}" width="${Math.max(0.9, w).toFixed(2)}" height="0.76" fill="${i >= n - 1 ? "var(--accent)" : "#3a6bd6"}"/>`;
+  const max = Math.max(1e-9, ...s.map(x => x.cost));
+  const top = s.reduce((a, x) => x.cost > a.cost ? x : a, s[0]);
+  const hh = e => { const h = new Date(e * 1000).getHours(); return (h % 12 || 12) + (h < 12 ? "a" : "p"); };
+  // 48 hours spans days, and "4p" twice would read as one afternoon, so each
+  // earlier day gets its weekday before its first row.
+  const day = e => new Date(e * 1000).toDateString();
+  const wd = e => new Date(e * 1000).toLocaleDateString([], {weekday: "short"});
+  const today = day(Date.now() / 1000);
+  let shownDay = today;
+  const start = block && block.window_start_epoch;
+  const rows = [];
+  let idle = 0, divided = !start;
+  const flush = () => {
+    if(idle) rows.push(`<div class="hr"><span class="hl"></span><span class="hg">${idle}h idle</span></div>`);
+    idle = 0;
+  };
+  for(let i = s.length - 1; i >= 0; i--){               // newest first
+    const h = s[i], inBlock = !!start && h.epoch + 3600 > start;
+    if(!inBlock && !divided){
+      flush();
+      rows.push(`<div class="hr hdiv"><span class="hl"></span><span class="hd">▲ ${block.anchored ? "this 5h block" : "last 5 hours"}</span></div>`);
+      divided = true;
+    }
+    if(h.cost <= 0){ idle++; continue; }
+    flush();
+    if(day(h.epoch) !== shownDay){
+      shownDay = day(h.epoch);
+      rows.push(`<div class="hr hday"><span class="hl"></span><span class="hg">${wd(h.epoch)}</span></div>`);
+    }
+    const tip = `${F.money(h.cost)} · ${hh(h.epoch)}–${hh(h.epoch + 3600)} · ${F.tok(h.tokens)} tokens`;
+    rows.push(`<div class="hr${inBlock ? " blk" : ""}" title="${tip}"><span class="hl">${hh(h.epoch)}</span>`
+      + `<span class="hb"><i style="width:${Math.max(2, h.cost / max * 100).toFixed(1)}%"></i></span></div>`);
   }
-  host.innerHTML = `<svg viewBox="0 0 100 ${n}" preserveAspectRatio="none">${g}${r}</svg>`;
-  if(cap) cap.textContent = `48h · peak ${F.money(max)}/h`;
+  // Whatever is still in `idle` runs off the far edge of the 48 hours.
+  host.innerHTML = `<div class="hrs">${rows.join("")}</div>`;
+  if(cap) cap.textContent = `48h · peak ${F.money(max)}/h at ${hh(top.epoch)}`
+    + (day(top.epoch) === today ? "" : ` ${wd(top.epoch)}`);
 }
 
 // ---- Details (unchanged accounting) ----
@@ -781,27 +851,11 @@ function fitToViewport(){
   if(tooTall()) r.classList.add("allow-scroll");
 }
 
-// A docked strip is mostly empty below the gauges, so the burn history takes
-// whatever is left rather than sitting at a fixed size. Capped so 48 rows stay
-// around 10px each — past that the chart is just tall, not more legible.
-const SPARK_BASE = 70, SPARK_MAX = 520;
-function fillSpark(){
-  const host = el("burnSpark");
-  if(!host || !host.offsetParent) return;          // card hidden — nothing to fill
-  if(window.innerWidth >= SQUEEZE_MAX_W) return;   // wide layout scrolls; leave it alone
-  const leftover = window.innerHeight - document.querySelector(".wrap").getBoundingClientRect().bottom;
-  if(leftover > 10)
-    host.style.height = Math.min(SPARK_MAX, SPARK_BASE + leftover - 8) + "px";
-}
-
-// One layout pass: reset the flexible bit to a known size, settle the density
-// against that, then spend what is left. Order matters — measuring a spark that
-// is still holding last pass's height makes fitToViewport() squeeze for nothing.
+// One layout pass. The burn history used to stretch into whatever height the
+// strip had left, which made 48 unlabelled rows taller but never more legible;
+// it now sizes to its own rows, so all that is left to settle is the density.
 function relayout(){
-  const host = el("burnSpark");
-  if(host) host.style.height = SPARK_BASE + "px";
   fitToViewport();
-  fillSpark();
 }
 
 async function tick(){
