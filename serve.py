@@ -14,7 +14,7 @@ import time
 
 import pacing
 import quota
-from engine import UsageEngine
+from engine import UsageEngine, code_projects_dir, cowork_sessions_dir
 from server import make_server
 
 
@@ -36,7 +36,7 @@ _MOCK_RESET_IN = {"five_hour": 3.0 * 3600, "seven_day": 3.2 * 86400,
 
 class State:
     def __init__(self):
-        self.engine = UsageEngine(os.path.expanduser("~/.claude/projects"))
+        self.engine = UsageEngine(code_projects_dir(), cowork_dir=cowork_sessions_dir())
         self.quota_enabled = os.environ.get("CLAUDE_USAGE_QUOTA") == "1"
         self.mock = os.environ.get("CLAUDE_USAGE_MOCK_QUOTA") == "1"
         self.history = pacing.SampleStore()

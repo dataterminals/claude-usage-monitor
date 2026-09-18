@@ -36,6 +36,12 @@ the boundary's local clock time shifts by an hour, same as the reset's does.
 
 "Used today" needs utilization *at* the day boundary, which the API doesn't
 report, so `SampleStore` keeps a small on-disk history of readings.
+
+The same history gives the gauge its own rate (`gauge_velocity`): how fast the
+live 5-hour bar has been climbing over the last fifteen and thirty minutes.
+The transcript tachometers in engine.py cannot see Chat — it writes no
+transcript — but the bar is the server's number and counts every surface, so
+this is the one rate that does too.
 """
 import json
 import os
@@ -59,6 +65,12 @@ DEFAULT_CEILING = 100.0
 _KEEP_SECONDS = 8 * 86400      # a little more than the weekly window
 _MAX_SAMPLES = 4000
 _MIN_SAMPLE_GAP = 300.0        # re-record an unchanged reading at most this often
+
+# The gauge rate's boxes. No five-minute one: the bar is reported in whole
+# points, and one point over five minutes would read as a 12 pts/h spike from
+# a single rounding step. Fifteen minutes sees a dozen or so readings and a
+# point is 4 pts/h — a fifth of the even-spend rate — which is fine resolution.
+GAUGE_WINDOWS = (900.0, 1800.0)
 
 # A weekly bar cannot fall inside its own window — it only drops at the reset,
 # which starts a new generation. So a drop with the generation unchanged means
@@ -259,6 +271,52 @@ class SampleStore:
         return s["u"][key], s["t"], False
 
 
+def gauge_velocity(store, key="five_hour", now=None, windows=GAUGE_WINDOWS,
+                   ceiling=DEFAULT_CEILING):
+    """How fast the live bar is climbing, from the readings the store kept.
+
+    For each box: the points the bar gained over consecutive readings inside
+    the box, as an hourly rate. Only *gains* are summed, so a reset (the bar
+    drops to zero at the block boundary) or a plan rebase contributes nothing
+    and the climb after it counts from zero, with no generation bookkeeping.
+    A gain is credited to the reading that first showed it; a changed reading
+    is recorded within one poll of being seen, so that is at most a minute
+    late. `pace_multiple` is the rate over the even-spend rate — ceiling over
+    the window's length, 20 pts/h for the 5-hour bar — because "8 pts/h" means
+    nothing on its own and "0.4× pace" does. `samples` is the number of
+    readings the box held; zero means there is no rate yet, not a rate of zero.
+    """
+    now = now or time.time()
+    samples = []
+    for s in (store.load() if store is not None else []):
+        u = s.get("u") if isinstance(s, dict) else None
+        if isinstance(u, dict) and u.get(key) is not None \
+                and isinstance(s.get("t"), (int, float)):
+            samples.append((float(s["t"]), float(u[key])))
+    samples.sort()
+    hours = window_hours(key) or WINDOW_HOURS["five_hour"]
+    budget = float(ceiling) / hours
+    out = []
+    for w in windows:
+        since = now - w
+        rise, n = 0.0, 0
+        for (_, ua), (tb, ub) in zip(samples, samples[1:]):
+            if tb <= since:
+                continue
+            n += 1
+            if ub > ua:
+                rise += ub - ua
+        pph = rise * 3600.0 / w
+        out.append({
+            "window_seconds": w,
+            "points_per_hour": pph,
+            "points": rise,
+            "pace_multiple": (pph / budget) if budget else 0.0,
+            "samples": n,
+        })
+    return out
+
+
 def _window(key, lim, now, ceiling):
     util = lim.get("utilization")
     reset_e = _anchor(lim.get("resets_at"))
@@ -393,6 +451,10 @@ def compute(limits, now=None, store=None, ceiling=DEFAULT_CEILING):
         "resume_at_epoch": (driver["resume_at_epoch"]
                             if (driver and driver["wait_seconds"] > 0) else None),
         "weekly_day": _weekly_day(week, store, now, ceiling) if week else None,
+        # The gauge's own climb rate; None without a store (the mock, the
+        # tests), a list of boxes with `samples: 0` while the history is empty.
+        "gauge_rate": gauge_velocity(store, "five_hour", now, ceiling=ceiling)
+                      if store is not None else None,
     }
     out["headline"] = headline(out)
     return out

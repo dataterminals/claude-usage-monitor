@@ -34,10 +34,11 @@ from PIL import Image, ImageDraw, ImageFont
 import pacing
 import quota
 import window as win_mod
-from engine import UsageEngine
+from engine import UsageEngine, code_projects_dir, cowork_sessions_dir
 from server import make_server
 
-PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+PROJECTS_DIR = code_projects_dir()
+COWORK_DIR = cowork_sessions_dir()      # the desktop app's Cowork sessions
 PORT = 8787
 REFRESH_SECONDS = 5      # idle cadence: poll at least this often
 MIN_INTERVAL = 2.0       # floor between passes, whatever the watchdog says
@@ -139,7 +140,7 @@ def make_image(text, accent):
 
 class App:
     def __init__(self):
-        self.engine = UsageEngine(PROJECTS_DIR)
+        self.engine = UsageEngine(PROJECTS_DIR, cowork_dir=COWORK_DIR)
         self.snap = {}
         self.quota = {}
         self.pace = {}
@@ -212,6 +213,9 @@ class App:
                 "last_save": _when(save[0], now, result=save[1]) if save else None,
                 "last_written": _when(eng.last_written, now),
             },
+            # Each transcript root as this process sees it: there or not, and
+            # how many files it has read from it.
+            "sources": eng.sources(),
         }
 
     # ---- limit helpers ----
@@ -536,12 +540,26 @@ def start_watcher(app):
                 app._dirty.set()
 
     obs = Observer()
+    # Both roots. The Cowork one is scheduled only if it is there — watchdog
+    # raises on a missing directory, and one bad schedule() must not cost the
+    # Claude Code watch. Cowork writes plenty under a session's `outputs`
+    # too; the handler's `.jsonl` filter keeps those from waking the loop.
+    watched = 0
+    for root in (PROJECTS_DIR, COWORK_DIR):
+        if not os.path.isdir(root):
+            continue
+        try:
+            obs.schedule(Handler(), root, recursive=True)
+            watched += 1
+        except OSError:
+            continue
+    if not watched:
+        return None
     try:
-        obs.schedule(Handler(), PROJECTS_DIR, recursive=True)
         obs.daemon = True
         obs.start()
         return obs
-    except OSError:
+    except (OSError, RuntimeError):
         return None
 
 

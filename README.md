@@ -10,8 +10,10 @@ bars) plus **pacing** — whether you're ahead of an even spend, and how long to
 wait to get back on it — which `/usage` doesn't give you. A second tab has the
 full local cost/token accounting if you ever want the detail.
 
-Everything is derived from your local Claude Code transcripts
-(`~/.claude/projects/**/*.jsonl`). The only network call is the plan-quota reader,
+Everything is derived from your local transcripts — Claude Code's
+(`~/.claude/projects/**/*.jsonl`) and Cowork's (under
+`%APPDATA%\Claude\local-agent-mode-sessions`; see [What each number
+sees](#what-each-number-sees)). The only network call is the plan-quota reader,
 which is **read-only** unless you explicitly ask it to refresh your token.
 
 ## What it shows
@@ -28,9 +30,12 @@ which is **read-only** unless you explicitly ask it to refresh your token.
   of it you've used, and how far ahead of (or behind) the weekly line you are.
 - A self-tracked burn panel: three **tachometers** for how fast you're spending
   *right now* — the last 5, 15 and 30 minutes, on one shared scale — next to the
-  5-hour block's tokens/cost, its average rate, the projection, cache-hit %, and
-  the 7-day total. Works even when the live bars aren't connected. See
-  [Two burn rates](#two-burn-rates).
+  5-hour block's tokens/cost, its average rate, the projection, cache-hit %, the
+  7-day total and how much of it was Cowork, plus the **gauge climb**: the live
+  5-hour bar's own rate over the last 15 and 30 minutes, the one figure that
+  counts Chat. The dials work even when the live bars aren't connected. See
+  [Two burn rates](#two-burn-rates) and [What each number
+  sees](#what-each-number-sees).
 
 **Details tab:** notional cost KPIs (today / 5h / week / all-time), a 48-hour
 activity sparkline, 30-day cost bars, by-model and by-project tables, and recent
@@ -220,6 +225,42 @@ On a short window the dials are the first thing to go: `squeeze-0` folds the
 tachometers back to their numbers, and only then does `squeeze-1` drop the whole
 panel, so the gauges and the pacing answer still win.
 
+### What each number sees
+
+Two kinds of number share the Limits tab, and they do not see the same
+spending.
+
+- **The gauges** are the server's count and cover every surface: Claude Code,
+  Cowork, and Chat in the desktop app or a browser.
+- **The burn panel** is read from transcripts on this machine. Claude Code's
+  are under `~/.claude/projects`. Cowork runs the same runtime and writes the
+  same files, but keeps them under its own tree,
+  `%APPDATA%\Claude\local-agent-mode-sessions`, one `.claude\projects` per
+  session, so the engine walks both roots. (Walks, not globs: a recursive
+  `**` skips dot-directories, and every one of those transcripts sits under
+  one.) A Cowork session appears in the by-project table under its own title
+  — `Cowork · Dropbox connector setup`, from the sidecar the app keeps beside
+  the session — since the transcript's own working directory is always its
+  `outputs` folder. Chat leaves no transcript anywhere; it is claude.ai in a
+  web view. The dials do not move for it.
+
+That is what the **gauge climb** line under the dials is for: how many points
+the live 5-hour bar gained over the last fifteen and thirty minutes, as an
+hourly rate, from the same reading history pacing keeps. It counts Chat
+because the bar does. It is coarser than the dials — the bar is reported in
+whole points, read every 45 seconds — and in a different unit, so it sits
+beside them as a figure rather than as a fourth needle on their dollar scale.
+`20 pts/h` spends a 5-hour bar evenly; the hover gives each box as a multiple
+of that. There is no five-minute box, since one point in five minutes would
+read as a 12 pts/h spike off a single rounding step. Only gains are summed,
+so the drop at a block reset is not a negative rate and the climb after it
+counts from zero.
+
+Before the second root, a week in which the weekly gauge rose in 37 hours had
+16 of them with no transcript spend at all — a third of the week's points,
+invisible to the panel. Check the root with `python test_cowork.py` and the
+climb with `python test_pacing.py`.
+
 `_MIN` in `window.py` is `72 x 240`, deliberately below anything the full layout
 tolerates so that hand-dragging is governed by the CSS tiers. It is not the real
 floor, though: **Windows will not shrink a captioned, resizable window below
@@ -323,12 +364,13 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 
 | File | Role |
 |---|---|
-| `engine.py` | Incremental transcript parser + aggregation. Dedupes on `message.id`+`requestId` (like `ccusage`). Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
+| `engine.py` | Incremental transcript parser + aggregation over both roots (Claude Code's and Cowork's). Dedupes on `message.id`+`requestId` (like `ccusage`). Names Cowork sessions from their sidecar titles. Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
 | `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL, and backs off refused refreshes. Read-only unless `allow_refresh=True`. |
-| `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, and the on-disk reading history. |
+| `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, the on-disk reading history, and the gauge climb read from it. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
+| `test_cowork.py` | Self-check for the second transcript root (`python test_cowork.py`): found through the dot-directory, a session's `audit.jsonl` and `outputs` ignored, sessions named by their sidecar title and retitled when it changes, a cache from before the root still loads. Offline. |
 | `test_velocity.py` | Self-check for the tachometers' rates (`python test_velocity.py`): what one request reads as, when it drops out, a full box, where the peak sits, that the same burst reads lower the wider the box, and that every box reads zero during an idle hour while the block average sits. Offline. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
@@ -346,5 +388,6 @@ token. No telemetry. The dashboard binds to loopback only.
 Two files are written under `%LOCALAPPDATA%\ClaudeUsageMonitor`: the reading
 history that pacing needs (`quota-history.json` — utilization percentages and
 reset times, no content) and the parser cache (`engine-cache-*.json` — the
-per-message token counts and model/project names already in your transcripts, no
-prompts or replies). Delete either at any time; both are rebuilt.
+per-message token counts, model and project names, and Cowork session titles
+already in your transcripts and their sidecars, no prompts or replies). Delete
+either at any time; both are rebuilt.

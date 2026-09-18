@@ -1,8 +1,9 @@
 """Usage engine.
 
-Parses Claude Code transcripts (~/.claude/projects/**/*.jsonl), keeps an
-in-memory list of per-message usage records, and produces JSON-serializable
-snapshots aggregated by window / model / project / session / time.
+Parses Claude Code transcripts (~/.claude/projects/**/*.jsonl) and Cowork's
+(see cowork_sessions_dir), keeps an in-memory list of per-message usage
+records, and produces JSON-serializable snapshots aggregated by window / model
+/ project / session / time.
 
 Reads incrementally (byte offsets per file) so the growing active-session
 transcript is cheap to re-scan, and dedupes on the API message id + requestId
@@ -17,7 +18,6 @@ Parsing is deliberately paranoid about record shape. A single malformed line
 used to raise straight through the updater thread and freeze the tray until a
 restart, so anything unexpected here is skipped, never raised.
 """
-import glob
 import hashlib
 import json
 import os
@@ -46,6 +46,63 @@ _MAX_SKEW = 366 * 24 * 3600.0               # a year ahead of now
 # can say neither. The five-minute box is the "right now" one and leads.
 _VELOCITY_WINDOWS = (300.0, 900.0, 1800.0)
 _VELOCITY_HOURS = 48
+
+# Where transcripts are. Cowork — the desktop app's agent mode — runs the same
+# Claude Code runtime, so its transcripts have exactly this shape, but it files
+# them under its own tree: one `.claude/projects` per session, inside
+# %APPDATA%\Claude\local-agent-mode-sessions, and nothing under ~/.claude ever
+# points at them. Verified 2026-09-18: a week in which the weekly gauge rose in
+# 37 hours, 16 of them with no transcript spend at all. Chat is the rest of
+# that gap and has no transcript anywhere — it is claude.ai in a web view —
+# so only the live gauges see it (pacing.gauge_velocity is the answer there).
+_TRANSCRIPT_MARK = os.sep + ".claude" + os.sep + "projects" + os.sep
+
+
+def code_projects_dir():
+    return os.path.expanduser("~/.claude/projects")
+
+
+def cowork_sessions_dir():
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    return os.path.join(base, "Claude", "local-agent-mode-sessions")
+
+
+def _transcripts(root, nested):
+    """Every transcript under `root`, in one walk.
+
+    Not glob: `**` skips dot-directories, and Cowork keeps its transcripts
+    under a `.claude` one, so `glob("**/*.jsonl")` over that tree finds
+    nothing at all — measured, zero of 56. With `nested` the walk descends
+    into a `.claude` only for its `projects`, and keeps only files under one:
+    a session's `audit.jsonl` and whatever lands in its `outputs` are not
+    transcripts. The whole Cowork tree walks in ~60 ms; pruned, well under.
+    A root that does not exist yields nothing.
+    """
+    for dp, dn, fn in os.walk(root):
+        if nested:
+            if os.path.basename(dp) == ".claude":
+                dn[:] = [d for d in dn if d == "projects"]
+            if _TRANSCRIPT_MARK not in dp + os.sep:
+                continue
+        for f in fn:
+            if f.endswith(".jsonl"):
+                yield os.path.join(dp, f)
+
+
+def _cowork_label(meta):
+    """A Cowork session's name for the by-project table.
+
+    The transcript's own `cwd` is the session's `outputs` folder, every time,
+    so the label comes from the sidecar `<session>.json` the app keeps beside
+    the session directory: its `title` ("Dropbox connector setup"). The
+    Chat-side agent session has none, only a `sessionType`.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    title = meta.get("title")
+    if isinstance(title, str) and title.strip():
+        return "Cowork \u00b7 " + title.strip()
+    kind = meta.get("sessionType")
+    return "Cowork \u00b7 " + (kind if isinstance(kind, str) and kind else "untitled")
 
 
 def _blank():
@@ -148,11 +205,13 @@ def _why(exc):
 
 
 class UsageEngine:
-    def __init__(self, projects_dir):
+    def __init__(self, projects_dir, cowork_dir=None):
         self.projects_dir = projects_dir
+        self.cowork_dir = cowork_dir
         self._offsets = {}      # path -> byte offset already consumed
         self._seen = set()      # dedup keys
         self._records = []      # list of record dicts
+        self._labels = {}       # cowork session key -> (sidecar mtime, label)
         self._lock = threading.Lock()
         self.last_scan_epoch = None
         self.first_scan_done = False
@@ -189,15 +248,31 @@ class UsageEngine:
                 doc.get("version") if isinstance(doc, dict) else None, _CACHE_VERSION))
         if doc.get("projects_dir") != self.projects_dir:
             return self._miss("written for another projects_dir")
+        # A cache from before the Cowork root has no `cowork_dir` at all: take
+        # it, and the Cowork transcripts simply have no offsets yet, so the
+        # first refresh reads them (23 MB, seconds) instead of everything
+        # (a full rescan is over a minute). A cache for a *different* Cowork
+        # root would carry that root's records, so that one is a miss.
+        if doc.get("cowork_dir", self.cowork_dir) != self.cowork_dir:
+            return self._miss("written for another cowork_dir")
         offsets, seen, records = doc.get("offsets"), doc.get("seen"), doc.get("records")
         if not isinstance(offsets, dict) or not isinstance(seen, list) \
                 or not isinstance(records, list):
             return self._miss("malformed")
+        labels = doc.get("labels")
+        if not isinstance(labels, dict):
+            labels = {}
+        for r in records:
+            if isinstance(r, dict):
+                r.setdefault("source", "code")    # pre-Cowork cache
         with self._lock:
             self._offsets = {k: v for k, v in offsets.items() if isinstance(v, int)}
             self._seen = set(seen)
             self._records = records
             self._saved_count = len(records)
+            # mtime None: re-read the sidecars on the first refresh, but the
+            # names are right from the first snapshot rather than a tick later.
+            self._labels = {k: (None, v) for k, v in labels.items() if isinstance(v, str)}
         self.load_result = "hit: {} records".format(len(records))
         return True
 
@@ -213,10 +288,12 @@ class UsageEngine:
             doc = {
                 "version": _CACHE_VERSION,
                 "projects_dir": self.projects_dir,
+                "cowork_dir": self.cowork_dir,
                 "saved_epoch": time.time(),
                 "offsets": offsets,
                 "seen": list(self._seen),
                 "records": list(self._records),
+                "labels": {k: v[1] for k, v in self._labels.items()},
             }
             count = len(self._records)
         tmp = self.cache_file + ".tmp"
@@ -240,24 +317,79 @@ class UsageEngine:
 
     # ---- ingest -----------------------------------------------------------
 
-    def refresh(self):
-        pattern = os.path.join(self.projects_dir, "**", "*.jsonl")
+    def roots(self):
+        """(root, source) pairs, the Cowork one only when configured."""
+        out = [(self.projects_dir, "code")]
+        if self.cowork_dir:
+            out.append((self.cowork_dir, "cowork"))
+        return out
+
+    def sources(self):
+        """Per source: its root, whether it is there, and the transcripts
+        read so far. For GET /health, so "is Cowork being counted?" has an
+        answer that does not involve reading the cache off disk."""
         with self._lock:
-            try:
-                paths = glob.glob(pattern, recursive=True)
-            except OSError:
-                paths = []
-            for path in paths:
+            paths = list(self._offsets)
+        out = {}
+        for root, source in self.roots():
+            prefix = os.path.join(root, "")
+            out[source] = {
+                "dir": root,
+                "exists": os.path.isdir(root),
+                "files": sum(1 for p in paths if p.startswith(prefix)),
+            }
+        return out
+
+    def refresh(self):
+        with self._lock:
+            sessions = set()
+            for root, source in self.roots():
                 try:
-                    self._read_file(path)
-                except Exception:
-                    # One unreadable / malformed transcript must not abort the scan
-                    # (and must not reach the updater thread, which dies on it).
-                    continue
+                    paths = list(_transcripts(root, nested=(source == "cowork")))
+                except OSError:
+                    paths = []
+                for path in paths:
+                    if source == "cowork":
+                        sessions.add(path.split(_TRANSCRIPT_MARK, 1)[0])
+                    try:
+                        self._read_file(path, source)
+                    except Exception:
+                        # One unreadable / malformed transcript must not abort the scan
+                        # (and must not reach the updater thread, which dies on it).
+                        continue
+            self._relabel(sessions)
             self.last_scan_epoch = datetime.now(timezone.utc).timestamp()
             self.first_scan_done = True
 
-    def _read_file(self, path):
+    def _relabel(self, session_dirs):
+        """Refresh the Cowork session names from their sidecars.
+
+        Read at snapshot time rather than baked into each record, because the
+        app retitles a session after its first exchange (the transcript logs
+        an `ai-title` event) and the records parsed before that would keep
+        the placeholder forever. One stat per session per pass; the file is
+        re-read only when its mtime moves.
+        """
+        for sd in session_dirs:
+            key = os.path.basename(sd)
+            sidecar = sd + ".json"
+            try:
+                mtime = os.path.getmtime(sidecar)
+            except OSError:
+                mtime = None
+            cur = self._labels.get(key)
+            if cur is not None and cur[0] == mtime:
+                continue
+            meta = None
+            if mtime is not None:
+                try:
+                    with open(sidecar, encoding="utf-8") as f:
+                        meta = json.load(f)
+                except (OSError, ValueError):
+                    meta = None
+            self._labels[key] = (mtime, _cowork_label(meta))
+
+    def _read_file(self, path, source="code"):
         size = os.path.getsize(path)
         off = self._offsets.get(path, 0)
         if off > size:          # truncated / rotated — start over
@@ -279,13 +411,13 @@ class UsageEngine:
             except ValueError:
                 continue
             try:
-                rec = self._parse(obj, path)
+                rec = self._parse(obj, path, source)
             except Exception:
                 continue        # malformed record shape — skip the line
             if rec is not None:
                 self._records.append(rec)
 
-    def _parse(self, obj, path):
+    def _parse(self, obj, path, source="code"):
         if not isinstance(obj, dict) or obj.get("type") != "assistant":
             return None
         msg = obj.get("message")
@@ -333,9 +465,14 @@ class UsageEngine:
         stu = usage.get("server_tool_use")
         if not isinstance(stu, dict):
             stu = {}
-        cwd = obj.get("cwd")
-        cwd = cwd.rstrip("/\\") if isinstance(cwd, str) else ""
-        project = os.path.basename(cwd) or os.path.basename(os.path.dirname(path)) or "(unknown)"
+        if source == "cowork":
+            # The session directory's name; snapshot() swaps in the title.
+            # The record's own cwd is the session's `outputs` folder, always.
+            project = os.path.basename(path.split(_TRANSCRIPT_MARK, 1)[0]) or "(cowork)"
+        else:
+            cwd = obj.get("cwd")
+            cwd = cwd.rstrip("/\\") if isinstance(cwd, str) else ""
+            project = os.path.basename(cwd) or os.path.basename(os.path.dirname(path)) or "(unknown)"
 
         def _str(v):
             return v if isinstance(v, str) else ""
@@ -344,6 +481,7 @@ class UsageEngine:
             "epoch": epoch,
             "model": model,
             "project": project,
+            "source": source,
             "session": _str(obj.get("sessionId")),
             "branch": _str(obj.get("gitBranch")),
             "tokens": tokens,
@@ -381,19 +519,30 @@ class UsageEngine:
 
         today, last5, week, allt = _blank(), _blank(), _blank(), _blank()
         by_model, by_project, by_day, by_session = {}, {}, {}, {}
+        by_source = {}          # 7-day window: how much of it was Cowork
+        n_source = {}           # all-time record count per source
         hourly = {}
         recent = []             # (epoch, cost, tokens) within 48h, for _velocity
         first5_e = None
         latest = None
+        latest_proj = None
 
         with self._lock:
             recs = list(self._records)
+            labels = {k: v[1] for k, v in self._labels.items()}
 
         for r in recs:
             e = r["epoch"]
+            src = r.get("source", "code")
+            proj = r["project"]
+            if src == "cowork":
+                # Unlabelled means the sidecar has not been read yet (or was
+                # never there); one shared bucket beats a raw session id.
+                proj = labels.get(proj) or "Cowork \u00b7 session"
+            n_source[src] = n_source.get(src, 0) + 1
             _add(allt, r)
             if latest is None or e > latest["epoch"]:
-                latest = r
+                latest, latest_proj = r, proj
             if e >= midnight_e:
                 _add(today, r)
             if e >= w5_e:
@@ -402,10 +551,11 @@ class UsageEngine:
                     first5_e = e
             if e >= w7_e:
                 _add(week, r)
+                _add(by_source.setdefault(src, _blank()), r)
                 s = by_session.get(r["session"])
                 if s is None:
                     s = by_session[r["session"]] = _blank()
-                    s["project"] = r["project"]
+                    s["project"] = proj
                     s["model"] = r["model"]
                     s["last"] = e
                 _add(s, r)
@@ -416,7 +566,7 @@ class UsageEngine:
                     s["model"] = r["model"]
                 s["last"] = max(s["last"], e)
             _add(by_model.setdefault(r["model"], _blank()), r)
-            _add(by_project.setdefault(r["project"], _blank()), r)
+            _add(by_project.setdefault(proj, _blank()), r)
             if e >= d30_e:
                 day = datetime.fromtimestamp(e).strftime("%Y-%m-%d")
                 _add(by_day.setdefault(day, _blank()), r)
@@ -463,7 +613,8 @@ class UsageEngine:
             "active": bool(latest and idle is not None and idle < 300),
             "idle_seconds": int(idle) if idle is not None else None,
             "session": latest["session"] if latest else None,
-            "project": latest["project"] if latest else None,
+            "project": latest_proj,
+            "source": latest.get("source", "code") if latest else None,
             "model": latest["model"] if latest else None,
             "since_epoch": first5_e,
         }
@@ -491,6 +642,11 @@ class UsageEngine:
                 "generated_epoch": now_e,
                 "record_count": len(recs),
                 "projects_dir": self.projects_dir,
+                "cowork_dir": self.cowork_dir,
+                # What each root has contributed, so the dashboard can say
+                # "Cowork: 1,957 messages" rather than leave you to infer it.
+                "sources": {source: {"dir": root, "records": n_source.get(source, 0)}
+                            for root, source in self.roots()},
                 "models": sorted(by_model.keys()),
                 "scanning": not self.first_scan_done,
             },
@@ -503,6 +659,7 @@ class UsageEngine:
             },
             "by_model": rank(by_model, "model"),
             "by_project": rank(by_project, "project"),
+            "by_source": rank(by_source, "source"),
             "by_day": days,
             "hourly_48h": series,
             "velocity": velocity,

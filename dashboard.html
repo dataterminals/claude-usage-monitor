@@ -323,7 +323,7 @@
     <section class="card hidden" id="pacerCard"><div class="pacer" id="pacer"></div></section>
     <div id="gaugeHost"></div>
     <section class="card" id="localBurnCard">
-      <h2><span class="name-full">Local burn — self-tracked</span><span class="name-min">BURN</span></h2>
+      <h2><span class="name-full">Local burn — Code &amp; Cowork transcripts</span><span class="name-min">BURN</span></h2>
       <div class="burnWide" id="localBurn"></div>
       <div id="burnMin"></div>
     </section>
@@ -331,7 +331,7 @@
 
   <!-- DETAILS TAB -->
   <div id="tab-details" class="hidden">
-    <div class="note">Notional equivalent-API cost from local transcripts — an intensity gauge, not a bill.</div>
+    <div class="note">Notional equivalent-API cost from local transcripts (Claude Code and Cowork; Chat writes none, so only the live gauges see it) — an intensity gauge, not a bill.</div>
     <div class="grid kpis" id="kpis"></div>
     <section class="card"><h2>Activity — last 48 hours</h2><div id="spark"></div></section>
     <section class="card"><h2>Daily cost — last 30 days</h2><div id="days"></div></section>
@@ -650,8 +650,49 @@ function renderLimits(usage, quota){
     <div class="row"><span class="k">Projected full 5h</span><span class="v mono">${F.money(b.projected_cost)}</span></div>
     <div class="row"><span class="k">Cache hit</span><span class="v mono">${cachePct}%</span></div>
     <div class="row"><span class="k">Last 7 days</span><span class="v mono">${F.money(usage.windows.week_7d.cost)} · ${F.tok(usage.windows.week_7d.tokens_total)}</span></div>
+    ${coworkRow(usage)}
+    ${gaugeRow(quota)}
   </div>`;
-  renderBurnMin(usage);
+  renderBurnMin(usage, quota);
+}
+
+// How much of the week was Cowork. Its sessions are in the by-project table
+// under their own titles, but one line here says whether the split matters.
+function coworkRow(usage){
+  const c = (usage.by_source || []).find(x => x.name === "cowork");
+  if(!c || !c.cost) return "";
+  return `<div class="row"><span class="k">of which Cowork</span><span class="v mono">${F.money(c.cost)} · ${F.tok(c.tokens_total)}</span></div>`;
+}
+
+// The gauge's own climb: what the live 5-hour bar gained over the last fifteen
+// and thirty minutes (pacing.gauge_velocity), in points of the cap per hour.
+// The dials read the transcripts, and Chat writes none, so this is the one
+// rate that counts every surface — Chat, Cowork and Code alike. It is coarser
+// than the dials (the bar is whole points, read every 45 s) and in a different
+// unit, so it sits beside them as a figure rather than as a fourth needle on
+// their dollar scale. 20 pts/h spends a 5-hour bar evenly; the hover gives
+// each box as a multiple of that, since "8 pts/h" alone has no scale.
+const GAUGE_NOTE = "Read off the live 5-hour gauge, so Chat and Cowork count too; 20 pts/h spends the block evenly.";
+function gaugeBoxes(quota){
+  const g = quota && quota.available && quota.pacing && quota.pacing.gauge_rate;
+  if(!g || !g.length) return null;
+  return g.map(r => {
+    const mins = Math.round(r.window_seconds / 60), has = r.samples > 0;
+    const pph = r.points_per_hour || 0, pts = Math.round(r.points || 0);
+    return {mins,
+      text: has ? `+${pph < 10 ? pph.toFixed(1) : Math.round(pph)} pts/h` : "no reading",
+      tip: has ? `${mins} min: the 5h bar climbed ${pts} pt${pts === 1 ? "" : "s"}, ${pph.toFixed(1)} pts/h, ${(r.pace_multiple || 0).toFixed(1)}× the even-spend rate`
+               : `${mins} min: no readings yet`};
+  });
+}
+function gaugeRow(quota){
+  const g = gaugeBoxes(quota); if(!g) return "";
+  // One row per box: the pair on one line wrapped its value even at 760px.
+  return g.map(x => `<div class="row" title="${x.tip}. ${GAUGE_NOTE}"><span class="k">Gauge climb ${x.mins} min · all surfaces</span><span class="v mono">${x.text}</span></div>`).join("");
+}
+function gaugeStrip(quota){
+  const g = gaugeBoxes(quota); if(!g) return "";
+  return g.map(x => `<div class="bm-stat" title="${x.tip}. ${GAUGE_NOTE}"><span class="bm-lbl">gauge ${x.mins}m · all</span><span class="bm-val">${x.text}</span></div>`).join("");
 }
 
 // The tachometers, one per box width: what landed in the last five, fifteen and
@@ -720,7 +761,7 @@ function tach(v, scale, lead){
 // The strip's burn panel. Same numbers as the wide ledger, restacked: at this
 // width a label and its value cannot share a line, and the 48-hour history is
 // worth more than the rows it replaces.
-function renderBurnMin(usage){
+function renderBurnMin(usage, quota){
   const host = el("burnMin");
   if(!host) return;
   const b = usage.windows.rolling_5h;
@@ -731,7 +772,8 @@ function renderBurnMin(usage){
     <div class="bm-stat"><span class="bm-lbl">5h average</span><span class="bm-val">${F.money(b.burn_cost_per_hour)}/h · ${F.tok(tokPerH)}/h</span></div>
     <div class="bm-stat"><span class="bm-lbl">5h spent</span><span class="bm-val">${F.money(b.cost)} · ${F.tok(b.tokens_total)}</span></div>
     <div class="bm-stat"><span class="bm-lbl">projected 5h</span><span class="bm-val">${F.money(b.projected_cost)}</span></div>
-    <div class="bm-stat"><span class="bm-lbl">last 7 days</span><span class="bm-val">${F.money(usage.windows.week_7d.cost)}</span></div>`;
+    <div class="bm-stat"><span class="bm-lbl">last 7 days</span><span class="bm-val">${F.money(usage.windows.week_7d.cost)}</span></div>
+    ${gaugeStrip(quota)}`;
   renderMiniSpark(usage.hourly_48h, b);
 }
 
@@ -866,9 +908,11 @@ async function tick(){
     ]);
     renderLimits(usage, quota);
     renderDetails(usage);
+    const cw = (usage.meta.sources || {}).cowork;
     el("models").textContent = usage.meta.scanning
       ? "scanning transcripts…"
-      : `${usage.meta.record_count.toLocaleString()} messages`;
+      : `${usage.meta.record_count.toLocaleString()} messages`
+        + (cw && cw.records ? ` · ${cw.records.toLocaleString()} Cowork` : "");
     el("dot").className = "dot" + (usage.active.active ? " live" : "");
     el("clock").textContent = "updated " + new Date().toLocaleTimeString();
   } catch(e){ el("clock").textContent = "offline"; el("dot").className="dot"; }

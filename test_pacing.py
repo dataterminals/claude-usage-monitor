@@ -402,5 +402,64 @@ lims = dict(weekly(80.0), five_hour={"utilization": 50.0, "resets_at": iso(reset
 check("week over its line but not full: the 5-hour countdown still leads",
       pacing.compute(lims, now=now)["headline"].startswith("Ahead of pace"), True)
 
+print("\n[gauge] the gauge's own climb rate, from the reading history")
+# The transcript dials cannot see Chat; the bar can. This is that bar's rate:
+# points gained over the readings inside each box, as an hourly figure.
+G = pacing.GAUGE_WINDOWS                              # (900, 1800) s
+t0 = BASE
+hist = pacing.SampleStore(path=os.path.join(tempfile.gettempdir(), "usage-gauge-never-written.json"))
+hist._samples = []
+v = pacing.gauge_velocity(hist, now=t0)
+check("no history: a box per width, none with a reading",
+      [(x["window_seconds"], x["samples"], x["points_per_hour"]) for x in v],
+      [(G[0], 0, 0.0), (G[1], 0, 0.0)])
+lims = {"five_hour": {"utilization": 10.0, "resets_at": iso(t0 + 3600)}}
+check("  compute() carries it when given the store",
+      pacing.compute(lims, now=t0, store=hist)["gauge_rate"], v)
+check("  and not without one", pacing.compute(lims, now=t0)["gauge_rate"], None)
+
+
+def reading(t, u):
+    return {"t": t, "u": {"five_hour": u}, "w": 1}
+
+
+# Two unchanged readings, then a point a minute for ten minutes, read at the last.
+hist._samples = ([reading(t0 - 1500, 10.0), reading(t0 - 1000, 10.0)]
+                 + [reading(t0 - 600 + 60 * k, 10.0 + k) for k in range(11)])
+v15, v30 = pacing.gauge_velocity(hist, now=t0)
+check("ten points in ten minutes: 40 pts/h on the fifteen", v15["points_per_hour"], 40.0)
+check("  which is twice the even-spend rate (20 pts/h)", v15["pace_multiple"], 2.0)
+check("  the points themselves", v15["points"], 10.0)
+check("  from the readings the box held", v15["samples"], 11)
+check("  and 20 pts/h on the thirty, exactly pace", (v30["points_per_hour"], v30["pace_multiple"]), (20.0, 1.0))
+check("  which held one more reading", v30["samples"], 12)
+shuffled = list(reversed(hist._samples))
+hist._samples, keep = shuffled, hist._samples
+check("reading order does not matter", pacing.gauge_velocity(hist, now=t0), [v15, v30])
+hist._samples = keep
+
+# The block resets: the bar drops to zero, then climbs three points.
+hist._samples += [reading(t0 + 60, 0.0), reading(t0 + 120, 3.0)]
+v15 = pacing.gauge_velocity(hist, now=t0 + 120)[0]
+check("a reset is not a negative rate: ten before it and three after, 52 pts/h",
+      v15["points_per_hour"], 13.0 * 3600 / G[0])
+# A box later the climb before the reset has aged out; the reading that
+# showed the three drops out on the box edge, like a request does on a dial.
+v15 = pacing.gauge_velocity(hist, now=t0 + 120 + G[0] - 1)[0]
+check("  a second short of a box later, only the three remain", v15["points"], 3.0)
+check("  from the one reading still inside", v15["samples"], 1)
+v15 = pacing.gauge_velocity(hist, now=t0 + 120 + G[0])[0]
+check("  a box later on the dot: nothing in the box", (v15["samples"], v15["points_per_hour"]), (0, 0.0))
+
+check("a bar the history never carried has no reading",
+      [x["samples"] for x in pacing.gauge_velocity(hist, key="seven_day", now=t0)], [0, 0])
+hist._samples = [reading(t0 - 60, 10.0), {"t": t0 - 30, "u": {"five_hour": None}},
+                 {"t": "soon", "u": {"five_hour": 12.0}}, reading(t0, 11.0)]
+check("malformed readings are skipped, not summed",
+      pacing.gauge_velocity(hist, now=t0)[0]["points"], 1.0)
+check("a lower ceiling scales the pace multiple",
+      pacing.gauge_velocity(hist, now=t0, ceiling=50.0)[0]["pace_multiple"],
+      (1.0 * 3600 / G[0]) / 10.0)
+
 print("\n" + ("ALL PASS" if not fails else "FAILURES: " + ", ".join(fails)))
 sys.exit(1 if fails else 0)

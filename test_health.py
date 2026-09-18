@@ -123,6 +123,8 @@ try:
     check("  no error", h["updater"]["last_error"], None)
     check("  no save", h["cache"]["last_save"], None)
     check("  file is the engine's own path", h["cache"]["file"], app.engine.cache_file)
+    check("  the roots it reads, nothing read yet",
+          {k: (v["dir"], v["files"]) for k, v in h["sources"].items()}, {"code": (projects, 0)})
 
     append_turn(2)
     app._last_save = time.monotonic() - tray.SAVE_SECONDS    # due now, whatever the uptime
@@ -131,6 +133,7 @@ try:
     check("a finished pass counts", h["updater"]["ticks"], 1)
     check("  and is stamped", h["updater"]["last_tick"] is not None, True)
     check("  its save is reported", h["cache"]["last_save"]["result"], "saved 2 records")
+    check("  and the transcript it read is counted", h["sources"]["code"]["files"], 1)
     check("  and really landed", os.path.exists(app.engine.cache_file), True)
 
     def save_raises():
