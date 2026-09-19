@@ -280,21 +280,33 @@
 
   /* Backstop for a short screen: fitToViewport() steps through these until the
      page fits, so a 90px-wide strip never grows a scrollbar. */
-  /* First step: the dial goes and the tachometer folds back to its number —
-     the two lines the panel led with before it grew a dial — so a short strip
-     keeps its burn card a step longer. */
-  .squeeze-0 .tach svg, .squeeze-0 .tach .t-lbl { display:none; }
-  .squeeze-0 .tach .t-lead { margin-top:0; }
-  .squeeze-1 .note, .squeeze-1 #localBurnCard, .squeeze-1 .pacer .why { display:none; }
-  .squeeze-1 .gauge .day .row:not(.d-left) { display:none; }
-  .squeeze-2 .gauge .day, .squeeze-2 .tabs, .squeeze-2 #heroCard { display:none; }
-  .squeeze-2 .gauge[data-key="seven_day_opus"],
-  .squeeze-2 .gauge[data-key="seven_day_sonnet"],
-  .squeeze-2 .gauge[data-key^="seven_day_scoped_"] { display:none; }
-  .squeeze-2 .pace-full { display:none; }  .squeeze-2 .pace-min { display:block; }
+  /* The dials shrink before anything else goes, and they never fold back to
+     bare numbers: the fan of three needles is the reading — narrow above wide
+     is speeding up — and a column of figures cannot show it. First step,
+     stacked still at two-thirds size, no token rate, no redline label. */
+  .squeeze-0 .tachs { gap:2px; }
+  .squeeze-0 .tachs .tach { max-width:64px; }
+  .squeeze-0 .tach .t-lead { font-size:12px; margin-top:-5px; }
+  .squeeze-0 .tach .t-sub { font-size:8.5px; }
+  .squeeze-0 .tach .t-tok, .squeeze-0 .tach .t-lbl { display:none; }
+  /* Second: three tiny dials in one row. Each keeps its box width under it
+     and a bare figure, and the needles still fan. */
+  .squeeze-1 .tachs { flex-direction:row; justify-content:center; align-items:flex-start; gap:2px; }
+  .squeeze-1 .tachs .tach { width:auto; flex:1 1 0; max-width:48px; margin:0; }
+  .squeeze-1 .tach .t-lead { font-size:8px; margin-top:-2px; }
+  .squeeze-1 .tach .t-lead .unit { display:none; }
+  .squeeze-1 .tach .t-sub { font-size:7px; }
+  .squeeze-1 .tach .t-tok, .squeeze-1 .tach .t-lbl { display:none; }
+  .squeeze-2 .note, .squeeze-2 #localBurnCard, .squeeze-2 .pacer .why { display:none; }
+  .squeeze-2 .gauge .day .row:not(.d-left) { display:none; }
+  .squeeze-3 .gauge .day, .squeeze-3 .tabs, .squeeze-3 #heroCard { display:none; }
+  .squeeze-3 .gauge[data-key="seven_day_opus"],
+  .squeeze-3 .gauge[data-key="seven_day_sonnet"],
+  .squeeze-3 .gauge[data-key^="seven_day_scoped_"] { display:none; }
+  .squeeze-3 .pace-full { display:none; }  .squeeze-3 .pace-min { display:block; }
   /* the rollover is the one line that never gets squeezed away */
-  .squeeze-1 .reset-full, .squeeze-2 .reset-full { display:none; }
-  .squeeze-1 .reset-min, .squeeze-2 .reset-min { display:block; }
+  .squeeze-2 .reset-full, .squeeze-3 .reset-full { display:none; }
+  .squeeze-2 .reset-min, .squeeze-3 .reset-min { display:block; }
   /* Out of density levels on a genuinely tiny window: scroll rather than
      clip. A scrollbar makes a worse strip; silently losing the bottom card
      makes a wrong one. Class beats the element rule above on specificity. */
@@ -692,7 +704,10 @@ function gaugeRow(quota){
 }
 function gaugeStrip(quota){
   const g = gaugeBoxes(quota); if(!g) return "";
-  return g.map(x => `<div class="bm-stat" title="${x.tip}. ${GAUGE_NOTE}"><span class="bm-lbl">gauge ${x.mins}m · all</span><span class="bm-val">${x.text}</span></div>`).join("");
+  // One line for both boxes: the strip's height goes to the dials first.
+  const tip = g.map(x => x.tip).join("; ") + ". " + GAUGE_NOTE;
+  const val = g.map((x, i) => i < g.length - 1 ? x.text.replace(" pts/h", "") : x.text).join(" · ");
+  return `<div class="bm-stat" title="${tip}"><span class="bm-lbl">gauge ${g.map(x => x.mins + "m").join("·")} · all</span><span class="bm-val">${val}</span></div>`;
 }
 
 // The tachometers, one per box width: what landed in the last five, fifteen and
@@ -871,7 +886,7 @@ function renderSessions(d){ let rows="";
 // strip, but a short screen — or a "resume Thu 3:40 PM" that wraps — can still
 // push past the viewport. Step down three extra density levels rather than let
 // a scrollbar appear in a 90px-wide window.
-const SQUEEZE = ["squeeze-0", "squeeze-1", "squeeze-2"];
+const SQUEEZE = ["squeeze-0", "squeeze-1", "squeeze-2", "squeeze-3"];
 // Only the collapsed tiers trade content for a scrollbar. At the default
 // 480x900 the full page is ~990px tall, and dropping the burn ledger to save
 // 90px of scrolling is a bad trade — above this width, let it scroll.

@@ -221,9 +221,13 @@ its maximum is at a request time, and one ordered pass with a sliding box finds
 both the current reading and the peak (`engine._velocity`, called once per width
 over a list sorted once). Check it with `python test_velocity.py`.
 
-On a short window the dials are the first thing to go: `squeeze-0` folds the
-tachometers back to their numbers, and only then does `squeeze-1` drop the whole
-panel, so the gauges and the pacing answer still win.
+On a short window the dials shrink before anything else goes, and they never
+fold back to bare numbers: the fan of three needles is the reading, and a
+column of figures cannot show it. `squeeze-0` keeps them stacked at two-thirds
+size without the token rate or the redline label; `squeeze-1` puts three tiny
+ones in a row, each still labelled with its box width; only then does
+`squeeze-2` drop the whole panel, so the gauges and the pacing answer still
+win.
 
 ### What each number sees
 
