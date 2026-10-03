@@ -150,10 +150,12 @@
   /* The strip's 48h history (renderMiniSpark): a row per hour that spent
      something, newest at the top, idle stretches folded to one line. It sizes
      to its rows; stretching it into the strip's spare height only ever made it
-     emptier. */
+     emptier. A busy two days is ~48 rows, taller than the strip can carry, so
+     fitToViewport() cuts it from the oldest end first (.cut). */
   .bm-spark { margin:10px 0 4px; }
   .hrs { display:flex; flex-direction:column; gap:2px; }
   .hr { display:flex; align-items:center; gap:4px; min-height:8px; }
+  .hr.cut { display:none; }
   .hr .hl { flex:none; width:17px; text-align:right; color:var(--faint); font-size:8px; line-height:8px; font-variant-numeric:tabular-nums; }
   .hr .hb { flex:1; min-width:0; height:6px; }
   /* Rounded at the data end only, square at the baseline. The two blues are an
@@ -306,7 +308,10 @@
   }
 
   /* Backstop for a short screen: fitToViewport() steps through these until the
-     page fits, so a 90px-wide strip never grows a scrollbar. */
+     page fits, so a 90px-wide strip never grows a scrollbar. Before any of
+     them, the 48h history gives up its oldest hours: on a busy day it is the
+     one block taller than everything else together, and yesterday's 3am
+     matters less than the dials. */
   /* The dials shrink before anything else goes, and they never fold back to
      bare numbers: the fan of three needles is the reading — narrow above wide
      is speeding up — and a column of figures cannot show it. First step,
@@ -952,31 +957,75 @@ function renderMiniSpark(s, block){
   const start = block && block.window_start_epoch;
   const rows = [];
   let idle = 0, divided = !start;
-  const flush = () => {
-    if(idle) rows.push(`<div class="hr"><span class="hl"></span><span class="hg">${idle}h idle</span></div>`);
+  // data-h is how many hours back a row reaches, so that fitToViewport() can
+  // say how much history is left once it has cut the oldest rows off.
+  // `oldest` is the index of the earliest hour in the idle run being folded.
+  const flush = oldest => {
+    if(idle) rows.push(`<div class="hr" data-h="${s.length - oldest}"><span class="hl"></span><span class="hg">${idle}h idle</span></div>`);
     idle = 0;
   };
   for(let i = s.length - 1; i >= 0; i--){               // newest first
     const h = s[i], inBlock = !!start && h.epoch + 3600 > start;
     if(!inBlock && !divided){
-      flush();
+      flush(i + 1);
       rows.push(`<div class="hr hdiv"><span class="hl"></span><span class="hd">▲ ${block.anchored ? "this 5h block" : "last 5 hours"}</span></div>`);
       divided = true;
     }
     if(h.cost <= 0){ idle++; continue; }
-    flush();
+    flush(i + 1);
     if(day(h.epoch) !== shownDay){
       shownDay = day(h.epoch);
       rows.push(`<div class="hr hday"><span class="hl"></span><span class="hg">${wd(h.epoch)}</span></div>`);
     }
     const tip = `${F.money(h.cost)} · ${hh(h.epoch)}–${hh(h.epoch + 3600)} · ${F.tok(h.tokens)} tokens`;
-    rows.push(`<div class="hr${inBlock ? " blk" : ""}" title="${tip}"><span class="hl">${hh(h.epoch)}</span>`
+    rows.push(`<div class="hr${inBlock ? " blk" : ""}" data-h="${s.length - i}" title="${tip}"><span class="hl">${hh(h.epoch)}</span>`
       + `<span class="hb"><i style="width:${Math.max(2, h.cost / max * 100).toFixed(1)}%"></i></span></div>`);
   }
   // Whatever is still in `idle` runs off the far edge of the 48 hours.
   host.innerHTML = `<div class="hrs">${rows.join("")}</div>`;
-  if(cap) cap.textContent = `48h · peak ${F.money(max)}/h at ${hh(top.epoch)}`
+  // The peak stays the whole 48h's even when its row has been cut: it is the
+  // scale every bar is drawn against, not a row in the list.
+  host.dataset.span = s.length;
+  host.dataset.peak = `peak ${F.money(max)}/h at ${hh(top.epoch)}`
     + (day(top.epoch) === today ? "" : ` ${wd(top.epoch)}`);
+  sparkCaption();
+}
+
+// "48h · peak …" in full; once rows are cut, how much of it is still showing.
+function sparkCaption(){
+  const host = el("burnSpark"), cap = el("burnCap");
+  if(!host || !cap || !host.dataset.peak) return;
+  const span = +host.dataset.span;
+  const kept = Math.max(0, ...[...host.querySelectorAll(".hr[data-h]:not(.cut)")].map(r => +r.dataset.h));
+  const cut = host.querySelector(".hr.cut");
+  cap.textContent = (cut ? `last ${kept}h of ${span}` : `${span}h`) + ` · ${host.dataset.peak}`;
+}
+
+// Cut the history's oldest rows until the page fits, keeping at least
+// SPARK_MIN_ROWS. Returns whether it fits. Measures once, cuts by the height
+// the rows actually take, then checks, so a resize drag costs a couple of
+// layouts, not one per row.
+const SPARK_MIN_ROWS = 6;
+function fitSpark(tooTall){
+  const host = el("burnSpark");
+  const rows = host ? [...host.querySelectorAll(".hr")] : [];
+  rows.forEach(r => r.classList.remove("cut"));
+  // Only the strip tiers show the history; elsewhere it has no height to give.
+  if(!rows.length || !host.getClientRects().length){ sparkCaption(); return !tooTall(); }
+  let keep = rows.length;
+  while(tooTall() && keep > SPARK_MIN_ROWS){
+    const over = document.querySelector(".wrap").getBoundingClientRect().bottom - window.innerHeight;
+    const end = rows[keep - 1].getBoundingClientRect().bottom;
+    // Keep k rows: the column gives back everything below row k's bottom edge.
+    let k = keep - 1;
+    while(k > SPARK_MIN_ROWS && end - rows[k - 1].getBoundingClientRect().bottom < over) k--;
+    for(let j = k; j < keep; j++) rows[j].classList.add("cut");
+    keep = k;
+    // A weekday heading with every hour under it cut is a heading for nothing.
+    while(keep > 1 && rows[keep - 1].classList.contains("hday")){ rows[--keep].classList.add("cut"); }
+  }
+  sparkCaption();
+  return !tooTall();
 }
 
 // ---- Details (unchanged accounting) ----
@@ -1031,11 +1080,15 @@ function fitToViewport(){
   // the strip tiers set overflow:hidden, which clamps it to the viewport and
   // reports a comfortable fit while the last card is being cut in half.
   const tooTall = () => wrap.getBoundingClientRect().bottom > window.innerHeight + 1;
+  // At every density level the history is cut back first and only then does
+  // the next level apply — so the dials keep full size for as long as there
+  // are old hours left to give, and each level starts from the whole history.
+  if(fitSpark(tooTall)) return;
   for(const c of SQUEEZE){
-    if(!tooTall()) return;
     r.classList.add(c);
+    if(fitSpark(tooTall)) return;
   }
-  if(tooTall()) r.classList.add("allow-scroll");
+  r.classList.add("allow-scroll");
 }
 
 // One layout pass. The burn history used to stretch into whatever height the
