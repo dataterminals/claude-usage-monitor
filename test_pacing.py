@@ -317,7 +317,12 @@ raw = {
 flat = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]
 lims = quota._normalize(raw)
 check("scoped row kept as seven_day_scoped_fable", lims.get("seven_day_scoped_fable"),
-      {"utilization": 41.0, "resets_at": iso(wk_reset), "label": "This week · Fable"})
+      {"utilization": 41.0, "resets_at": iso(wk_reset),
+       "scope": "Fable", "label": "This week · Fable"})
+check("  with the bare name beside the label", pacing.scope_name("seven_day_scoped_fable",
+                                                                lims["seven_day_scoped_fable"]), "Fable")
+check("  which a key carrying only a label still yields",
+      pacing.scope_name("seven_day_opus", None), "Opus")
 check("session/weekly_all rows add nothing", sorted(lims), sorted(flat + ["seven_day_scoped_fable"]))
 w = pacing.compute(lims, now=now)["windows"].get("seven_day_scoped_fable") or {}
 check("pacing gauges it under that label", (w.get("utilization"), w.get("label")),
@@ -460,6 +465,87 @@ check("malformed readings are skipped, not summed",
 check("a lower ceiling scales the pace multiple",
       pacing.gauge_velocity(hist, now=t0, ceiling=50.0)[0]["pace_multiple"],
       (1.0 * 3600 / G[0]) / 10.0)
+
+print("\n[26] model_caps: a per-model weekly cap worked up into its own card")
+# The shape the docked strip actually renders. A scoped cap at 79% inside a week
+# at 61% is the case this exists for: the bar that binds is not the weekly one,
+# and reading the two percentages side by side does not say so.
+wk_start = BASE
+wk_reset = wk_start + 168 * 3600
+now = wk_start + 132 * 3600          # 5.5 days in
+lims = {
+    "five_hour": {"utilization": 0.0, "resets_at": iso(now + 5 * 3600)},
+    "seven_day": {"utilization": 61.0, "resets_at": iso(wk_reset)},
+    "seven_day_scoped_fable": {"utilization": 79.0, "resets_at": iso(wk_reset),
+                               "scope": "Fable", "label": "This week \u00b7 Fable"},
+}
+
+
+# Readings every ten minutes for the last two days, the weekly bar climbing at
+# 0.5 points an hour and Fable at 1.5 — three times the week's, which is the
+# whole story the card exists to tell.
+def history(week_rate, fable_rate):
+    gen = pacing._anchor(iso(wk_reset))
+    store = pacing.SampleStore(
+        path=os.path.join(tempfile.gettempdir(), "ClaudeUsageMonitor", "never-written.json"))
+    store._samples = [{"t": now - dt, "w": gen,
+                       "u": {"seven_day": 61.0 - week_rate * dt / 3600.0,
+                             "seven_day_scoped_fable": 79.0 - fable_rate * dt / 3600.0}}
+                      for dt in range(48 * 3600, -1, -600)]
+    return store
+
+
+caps = pacing.compute(lims, now=now, store=history(0.5, 1.5))["model_caps"]
+check("one card, and it is the scoped cap", [c["key"] for c in caps], ["seven_day_scoped_fable"])
+c = caps[0]
+check("  named by its scope, not its label", c["scope"], "Fable")
+check("  21 points left here", c["headroom"], 21.0)
+check("  39 in the week", c["week_headroom"], 39.0)
+check("  so it binds", c["binds"], True)
+check("  and stops you 18 points early", c["binds_by"], 18.0)
+check("  climb read off the widest box with readings", c["climb_seconds"], 86400.0)
+check("    at the rate the samples were built with", c["climb_points_per_hour"], 1.5)
+# 36h of window left at 1.5 pts/h is 54 points against 21 of headroom, so it
+# runs out first — 21/1.5 = 14h from now.
+check("  which caps it 14h out", c["full_at_epoch"] - now, 14.0 * 3600)
+check("    well before the reset", c["full_at_epoch"] < c["reset_epoch"], True)
+check("  projected at the rollover, clamped to the ceiling", c["projected_at_reset"], 100.0)
+# Day 6 of the week began 12h before `now`, and Fable has climbed 1.5 pts/h since.
+check("  day view keyed off the cap, not the week", c["day"]["used_today"], 18.0)
+check("    which is not the week's own figure", pacing.compute(
+    lims, now=now, store=history(0.5, 1.5))["weekly_day"]["used_today"], 6.0)
+
+print("\n[27] model_caps: the cases that must not read as a deadline")
+# Half the rate: 0.5 pts/h over the 36h left is 18 points against 21 of headroom,
+# so it arrives at 97% and never caps. A `full_at` past the reset is arithmetic,
+# not a deadline, and printing one beside a later rollover warns about nothing.
+c = pacing.compute(lims, now=now, store=history(0.2, 0.5))["model_caps"][0]
+check("a rate that arrives after the reset is not a cap time", c["full_at_epoch"], None)
+check("  it lands at 97% instead", c["projected_at_reset"], 97.0)
+
+# No history at all: no rate and no projection — emphatically not a rate of zero,
+# which would read as "you will never reach this cap".
+c = pacing.compute(lims, now=now)["model_caps"][0]
+check("no store, no climb", (c["climb"], c["climb_points_per_hour"]), (None, None))
+check("  and no projection invented from it", c["projected_at_reset"], None)
+check("  the headroom comparison still stands", (c["binds"], c["binds_by"]), (True, 18.0))
+
+# A cap with MORE room than the week does not bind: the week stops you first,
+# which is what lets the narrow tiers drop it and keep the one that matters.
+roomy = dict(lims, seven_day_scoped_fable=dict(lims["seven_day_scoped_fable"], utilization=20.0))
+c = pacing.compute(roomy, now=now)["model_caps"][0]
+check("a cap with room to spare does not bind", (c["binds"], c["binds_by"]), (False, -41.0))
+
+check("a plan that scopes nothing has no cards",
+      pacing.compute({k: v for k, v in lims.items() if "scoped" not in k},
+                     now=now)["model_caps"], [])
+# Without a weekly window there is nothing to compare against, but the cap is
+# still the only budget in sight, so it must not be quietly dropped.
+solo = pacing.compute({"seven_day_scoped_fable": lims["seven_day_scoped_fable"]}, now=now)
+check("no weekly window: the cap still gets a card",
+      [x["key"] for x in solo["model_caps"]], ["seven_day_scoped_fable"])
+check("  with the comparison unknown rather than false",
+      [(x["week_headroom"], x["binds"]) for x in solo["model_caps"]], [(None, None)])
 
 print("\n" + ("ALL PASS" if not fails else "FAILURES: " + ", ".join(fails)))
 sys.exit(1 if fails else 0)

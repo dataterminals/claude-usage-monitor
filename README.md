@@ -23,9 +23,13 @@ which is **read-only** unless you explicitly ask it to refresh your token.
 - **A pacing card** — the wait that puts you back on an even spend, e.g. *"1h 23m
   — wait until 12:11 PM and the 5-hour budget line catches up to what you've
   already spent."* See [Pacing](#pacing) for what that means.
-- Gauges for each live limit — 5-hour session, weekly (all models), weekly Opus,
-  weekly Sonnet — each with % used, a bar, and reset countdown. The tick on each
-  bar marks where an even spend would sit right now, so overshoot is visible.
+- Gauges for each live limit — 5-hour session and weekly (all models) — each
+  with % used, a bar, and reset countdown. The tick on each bar marks where an
+  even spend would sit right now, so overshoot is visible.
+- **A card per per-model weekly cap** (today that's Fable): its bar, plus the
+  things a bare percentage can't tell you — points left here against points
+  left in the week, how fast this bar is really climbing, and where that rate
+  lands before the reset. See [The per-model cap](#the-per-model-cap).
 - **Today's allowance** under the weekly gauge: `100/7 = 14.3%` per day, how much
   of it you've used, and how far ahead of (or behind) the weekly line you are.
 - A self-tracked burn panel: three **tachometers** for how fast you're spending
@@ -119,14 +123,15 @@ If you regenerate the app icon, re-run `python make_icons.py` first (writes
 The window is built to survive being dragged narrow and parked against a screen
 edge, full height. Width is the scarce axis (the height is a whole monitor), so
 `dashboard.html` collapses in tiers, each dropping the least load-bearing thing
-and re-flowing what is left. The **5-hour window, the week, the pacing answer,
-and the rollover time are visible in every tier** — that is the invariant.
+and re-flowing what is left. The **5-hour window, the week, whichever per-model
+cap binds before the week does, the pacing answer, and the rollover time are
+visible in every tier** — that is the invariant.
 
 | width | what changes |
 | --- | --- |
 | >= 440px | everything: explainers, hero verdict, day strip, local-burn ledger |
 | < 440px | *slim* — explainer prose and the model count go; the numbers stay full size |
-| < 300px | *strip* — tabs and title go; labels shorten to `5H` / `WEEK`; the per-model sub-limits drop; the pace line becomes one token (`+1h 35m`, `wait 12m`, `at cap - 40m`); the pacing reason clamps to three lines; the burn ledger restacks into the burn panel (below) |
+| < 300px | *strip* — tabs and title go; labels shorten to `5H` / `WEEK`; a per-model cap drops only if the week runs out before it does; the pace line becomes one token (`+1h 35m`, `wait 12m`, `at cap - 40m`); the pacing reason clamps to three lines; the burn ledger restacks into the burn panel (below) |
 | < 170px | *sliver* — the hero verdict and the day strip go |
 | < 140px | *edge* — the label stacks above the percentage; the clock goes |
 
@@ -160,6 +165,60 @@ Details tab has no gauges, so the 5-hour rollover also rides in the header as
 
 Times come from pacing's `reset_epoch`, falling back to the raw limit's
 `resets_at` so a window that pacing has not computed still shows one.
+
+### The per-model cap
+
+Your plan carries a second, tighter weekly budget scoped to one model — today
+Fable — and it does not run down at the same speed as the all-models week. When
+this was written the week sat at **61%** and Fable at **79%**: the bar about to
+stop you was not the weekly one, and reading the two percentages side by side
+does not say so.
+
+It used to render as a fourth gauge, and every narrow tier threw it away on the
+grounds that *"the per-model sub-limits are a luxury here; all-models is what
+binds"*. That stopped being true the moment the flat `seven_day_opus` and
+`seven_day_sonnet` keys started coming back null and the only per-model cap left
+was the one driving pacing's wait: in the docked strip — where this window
+actually lives — the single bar about to stop you was the one thing hidden.
+
+So it gets a card of its own instead, carrying what a 90px gauge could not:
+
+- **Points left here against points left in the week.** 21 versus 39 means this
+  cap stops you 18 points early, and those 18 are still yours to spend on any
+  other model. That is the line labelled *Stops you early by*.
+- **How fast this bar is really climbing.** The same sliding-box rate as the
+  gauge climb, but boxed for a window two orders of magnitude slower: an even
+  week spends `100/168 = 0.6` points an hour, so a fifteen-minute box can only
+  ever read zero or — off one rounding step — 4 pts/h, six times pace from a
+  single point. The boxes are **1h, 6h and 24h**; the card reads the widest one
+  that actually holds readings and says which (`Climb · last 24h`).
+- **Where that rate lands.** `projected_at_reset`, and if it arrives first, the
+  clock time it hits 100% — *"At the last 24h's rate Fable caps Mon 9:42 AM —
+  22h 17m before the week rolls over."* A projection *past* the reset is
+  arithmetic, not a deadline, so it isn't shown: printing one beside a later
+  rollover warns about nothing.
+- **Its own day-of-seven allowance**, from the same reading history the weekly
+  card uses — keyed off this cap rather than the week's, since 79% of a week
+  means little until you know 4 points of it went today.
+
+This is the one place the app estimates from a rate, which the `resume_at` model
+[deliberately refuses to do](#pacing) for the wait. A wait has to be a fixed
+instant you can count down to. *"Will I make it to Tuesday"* is a different
+question, has no honest answer that isn't a rate, and is wrong in a way you can
+see — the rollover time is right there beside it.
+
+Which cap survives a narrow window is now decided by the numbers rather than by
+the key's name: the card carries `data-binds` when its headroom is the smaller
+of the two, and only that one is kept in the strip and squeeze tiers. A cap with
+more room than the week has is the week's problem, and drops.
+
+Nothing here is Fable-specific. The endpoint names the scope at runtime
+(`{kind: "weekly_scoped", scope: {model: {display_name: "Fable"}}}`), `quota.py`
+keeps the bare name beside the label, and everything downstream reads it — so
+the day the cap is scoped to something else, the card renames itself. Check the
+math with `python test_pacing.py`; preview the card without a plan that has one
+using `CLAUDE_USAGE_MOCK_QUOTA=1 python serve.py`, whose mock now ships a scoped
+cap and a synthetic reading history to climb.
 
 ### The burn panel
 
@@ -370,7 +429,7 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 |---|---|
 | `engine.py` | Incremental transcript parser + aggregation over both roots (Claude Code's and Cowork's). Dedupes on `message.id`+`requestId` (like `ccusage`). Names Cowork sessions from their sidecar titles. Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
 | `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL, and backs off refused refreshes. Read-only unless `allow_refresh=True`. |
-| `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, the on-disk reading history, and the gauge climb read from it. |
+| `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, the on-disk reading history, the gauge climb read from it, and `model_caps` — the per-model weekly caps worked up into the card described above. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |

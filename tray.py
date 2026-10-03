@@ -277,7 +277,7 @@ class App:
                 continue
             if not isinstance(v, dict) or v.get("utilization") is None:
                 continue
-            name = (v.get("label") or pacing.LABELS.get(key, key)).split("·")[-1].strip()
+            name = pacing.scope_name(key, v)
             parts.append("{} {}%".format(name, int(v["utilization"])))
         if not parts:
             return "Weekly limit:  —"

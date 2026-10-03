@@ -58,6 +58,16 @@
   .gauge .pace { font-size:12.5px; }
   .gauge .day { margin-top:10px; padding-top:10px; border-top:1px solid var(--line); }
 
+  /* Per-model weekly cap (Fable today) — a gauge plus what it costs you */
+  .mcap .mv { font-size:12.5px; line-height:1.45; }
+  .mcap .mv b { font-weight:640; }
+  .mv-good b { color:var(--good); } .mv-warn b { color:var(--warn); } .mv-bad b { color:var(--bad); }
+  .mcap .mrows { margin-top:10px; padding-top:10px; border-top:1px solid var(--line);
+    font-size:12.5px; gap:7px; }
+  .mv-min { display:none; }
+  /* The bar reads as the model it measures, not as another blue week. */
+  .mcap .name-full, .mcap .name-min { color:var(--fable); }
+
   /* Pacing card — the "how long should I wait" answer */
   .pacer { display:flex; align-items:center; gap:15px; }
   .pacer .glyph { width:42px; height:42px; border-radius:12px; flex:none;
@@ -221,9 +231,12 @@
     section, .gauges { margin-top:8px; }
     .grid { gap:8px; }
     .hero { font-size:12.5px; line-height:1.4; }
-    /* The per-model sub-limits are a luxury here; all-models is what binds. */
-    .gauge[data-key="seven_day_opus"], .gauge[data-key="seven_day_sonnet"],
-    .gauge[data-key^="seven_day_scoped_"] { display:none; }
+    /* A per-model cap is only a luxury here when the week runs out before it
+       does. The one that binds is the whole reason to look at the strip. */
+    .mcap:not([data-binds]) { display:none; }
+    .mcap .mv-full { display:none; }  .mcap .mv-min { display:block; font-size:11px; }
+    .mcap .mrows { margin-top:7px; padding-top:7px; }
+    .mcap .mrows .row:not(.m-left) { display:none; }
     .name-full { display:none; }  .name-min { display:inline; }
     .pace-full { display:none; }  .pace-min { display:block; }
     .reset-full { display:none; }  .reset-min { display:block; }
@@ -299,10 +312,12 @@
   .squeeze-1 .tach .t-tok, .squeeze-1 .tach .t-lbl { display:none; }
   .squeeze-2 .note, .squeeze-2 #localBurnCard, .squeeze-2 .pacer .why { display:none; }
   .squeeze-2 .gauge .day .row:not(.d-left) { display:none; }
+  .squeeze-2 .mcap .mrows { display:none; }
   .squeeze-3 .gauge .day, .squeeze-3 .tabs, .squeeze-3 #heroCard { display:none; }
-  .squeeze-3 .gauge[data-key="seven_day_opus"],
-  .squeeze-3 .gauge[data-key="seven_day_sonnet"],
-  .squeeze-3 .gauge[data-key^="seven_day_scoped_"] { display:none; }
+  /* Even out of room the binding cap stays: it is the bar about to stop you,
+     and a strip that drops it is the failure this card was added to fix. */
+  .squeeze-3 .mcap:not([data-binds]) { display:none; }
+  .squeeze-3 .mcap .mv-full { display:none; }  .squeeze-3 .mcap .mv-min { display:block; }
   .squeeze-3 .pace-full { display:none; }  .squeeze-3 .pace-min { display:block; }
   /* the rollover is the one line that never gets squeezed away */
   .squeeze-2 .reset-full, .squeeze-3 .reset-full { display:none; }
@@ -334,6 +349,7 @@
     <section class="card" id="heroCard"><div class="hero" id="hero">Loading…</div></section>
     <section class="card hidden" id="pacerCard"><div class="pacer" id="pacer"></div></section>
     <div id="gaugeHost"></div>
+    <div id="modelCapHost"></div>
     <section class="card" id="localBurnCard">
       <h2><span class="name-full">Local burn — Code &amp; Cowork transcripts</span><span class="name-min">BURN</span></h2>
       <div class="burnWide" id="localBurn"></div>
@@ -502,7 +518,7 @@ function renderPacer(pace){
     // A per-model weekly cap (seven_day_opus, seven_day_scoped_fable, ...) has no
     // branch above, so one over its line used to land in "On pace" below, with
     // durS clamping its negative slack to "0s of budget banked", even at 100%.
-    const name = cap.label.split("·").pop().trim();
+    const name = cap.scope || cap.label.split("·").pop().trim();
     if(cap.state === "capped"){
       cls="pace-stop"; glyph="■"; lead=`${name} capped`;
       why = `The <b>${cap.label}</b> cap is full. It resets at <b>${F.at(cap.reset_epoch)}</b>
@@ -594,13 +610,97 @@ function gaugeCard(key, lim, p, day){
   </div>`;
 }
 
+// ---- Per-model weekly caps ------------------------------------------------
+// A scoped cap (today: Fable) is a second, tighter budget inside the weekly
+// one, and it used to render as a fourth gauge that every narrow tier threw
+// away — "the per-model sub-limits are a luxury here; all-models is what
+// binds". That stopped being true the moment the flat Opus/Sonnet keys went
+// null and the only per-model cap left was the one driving the wait: on this
+// plan the docked strip hid the single bar that was about to stop you.
+//
+// So they get their own card instead of a gauge, with what a bare percentage
+// can't tell you — points left here against points left in the week, the rate
+// the bar is really climbing at, and where that rate lands before the reset —
+// and the narrow tiers keep whichever cap actually binds (`data-binds`) rather
+// than dropping every per-model cap by name.
+// Always hours, never days: "the last 24h's rate" is the box, and "1d's rate"
+// reads as a calendar day rather than the trailing window it actually is.
+const BOX = s => Math.round(s/3600) + "h";
+
+function mcapVerdict(c){
+  const n = c.scope;
+  if(c.state === "capped")
+    return {cls:"bad", min:`${n} full`,
+      full:`<b>${n} is full</b> until the week rolls over. Nothing else is capped, so other models still have room.`};
+  if(c.full_at_epoch)
+    return {cls:"bad", min:`caps ${F.at(c.full_at_epoch)}`,
+      full:`At the last ${BOX(c.climb_seconds)}’s rate <b>${n} caps ${F.at(c.full_at_epoch)}</b> —
+            ${F.durS(c.reset_epoch - c.full_at_epoch)} before the week rolls over.`};
+  if(c.projected_at_reset != null)
+    return {cls: c.projected_at_reset >= 90 ? "warn" : "good",
+      min:`~${Math.round(c.projected_at_reset)}% by ↻`,
+      full:`At the last ${BOX(c.climb_seconds)}’s rate ${n} reaches
+            <b>~${Math.round(c.projected_at_reset)}%</b> by the rollover, with
+            ${(100 - c.projected_at_reset).toFixed(0)} points unspent.`};
+  // No reading history yet (a fresh install, or the tray's first minutes) —
+  // fall back to the one comparison that needs no rate at all.
+  if(c.binds)
+    return {cls:"warn", min:`${c.headroom.toFixed(0)} pts`,
+      full:`<b>${n} runs out ${c.binds_by.toFixed(0)} points before the week does.</b>
+            No climb rate yet, so there is no projection.`};
+  return {cls:"good", min:`${c.headroom.toFixed(0)} pts`,
+    full:`The all-models week binds before ${n} does — ${c.headroom.toFixed(0)} points left here
+          against ${c.week_headroom == null ? "—" : c.week_headroom.toFixed(0)} in the week.`};
+}
+
+function mcapCard(c, weekUtil){
+  const u = Math.max(0, Math.min(100, c.utilization));
+  const v = mcapVerdict(c);
+  const tick = `<i style="left:${Math.max(0,Math.min(100,c.ideal_utilization))}%" title="an even spend would be here now"></i>`;
+  const resetFull = `Rolls over <b>${F.at(c.reset_epoch)}</b> · ${until(c.reset_epoch)}`;
+  const climb = c.climb_points_per_hour == null ? "" : (() => {
+    const b = (c.climb || []).find(x => x.window_seconds === c.climb_seconds) || {};
+    // One line, like the gauge-climb tips: a title attribute renders its own
+    // newlines and a template literal's indentation along with them.
+    const tip = `${c.climb_points_per_hour.toFixed(2)} points an hour over the last ${BOX(c.climb_seconds)} — ${(b.pace_multiple || 0).toFixed(1)}× the rate that spends a week evenly (0.6 pts/h).`;
+    return `<div class="row m-climb" title="${tip}"><span class="k">Climb · last ${BOX(c.climb_seconds)}</span><span class="v mono">${c.climb_points_per_hour.toFixed(1)} pts/h</span></div>`;
+  })();
+  // "Left today" can no more exceed this cap's own headroom than the week's, so
+  // the clamp is the tighter of the two — which is what handing dayStrip the
+  // higher of the two utilizations gets you, with no second code path.
+  const clamp = {utilization: Math.max(c.utilization, weekUtil == null ? 0 : weekUtil)};
+  return `<section class="card gauge mcap" data-key="${c.key}"${c.binds === false ? "" : ' data-binds="1"'}>
+    <div class="top"><span class="name"><span class="name-full">${c.label}</span><span class="name-min">${c.scope.toUpperCase()}</span></span><span class="pct" style="color:${color(u)}">${Math.floor(c.utilization)}%</span></div>
+    <div class="bar"><span style="width:${Math.max(2,u)}%;background:${color(u)}"></span>${tick}</div>
+    <div class="mv mv-full mv-${v.cls}">${v.full}</div>
+    <div class="mv mv-min mv-${v.cls}">${v.min}</div>
+    <div class="reset reset-full">${resetFull}</div>
+    <div class="reset reset-min">↻ ${F.at(c.reset_epoch)}</div>
+    <div class="mrows rows">
+      <div class="row m-left"><span class="k">${c.scope} left</span><span class="v mono" style="color:${c.headroom<=0?"var(--bad)":c.headroom<10?"var(--warn)":"var(--ink)"}">${c.headroom.toFixed(0)} pts</span></div>
+      <div class="row m-week"><span class="k">All models left</span><span class="v mono">${c.week_headroom == null ? "—" : c.week_headroom.toFixed(0) + " pts"}</span></div>
+      ${c.binds ? `<div class="row m-gap" title="Points the week still has that this cap cannot reach — spend them on another model."><span class="k">Stops you early by</span><span class="v mono" style="color:var(--warn)">${c.binds_by.toFixed(0)} pts</span></div>` : ""}
+      ${climb}
+    </div>
+    ${dayStrip(c.day, clamp)}
+  </section>`;
+}
+
+function renderModelCaps(pace){
+  const host = el("modelCapHost");
+  const caps = (pace && pace.model_caps) || [];
+  const weekUtil = ((pace && pace.windows && pace.windows.seven_day) || {}).utilization;
+  host.innerHTML = caps.map(c => mcapCard(c, weekUtil)).join("");
+}
+
 function renderLimits(usage, quota){
   const host = el("gaugeHost");
   const b = usage.windows.rolling_5h;
 
   if(!quota || !quota.enabled){
     el("hero").innerHTML = `Live limit gauges are <b>off</b>. Enable “Live quota” in the tray menu.`;
-    host.innerHTML = ""; el("pacerCard").classList.add("hidden");
+    host.innerHTML = ""; el("modelCapHost").innerHTML = "";
+    el("pacerCard").classList.add("hidden");
     el("rollover").textContent = "";
   } else if(!quota.available){
     // "Starting up" is not a failure; showing the /login banner for it sends
@@ -614,6 +714,7 @@ function renderLimits(usage, quota){
       : `<section class="banner">${quota.reason || "unavailable"}.<br>
       Fix by running <code>/login</code> in a Claude Code terminal, or use the tray’s
       <b>Attempt token refresh</b>. Until then, the self-tracked burn below still works.</section>`;
+    el("modelCapHost").innerHTML = "";
     el("pacerCard").classList.add("hidden");
     el("rollover").textContent = "";
   } else {
@@ -647,10 +748,17 @@ function renderLimits(usage, quota){
       el("hero").innerHTML = `Connected — no session window is open yet. Gauges appear once you start using tokens.`;
     }
     renderPacer(P);
+    // Per-model caps leave the gauge grid for their own cards below it — one
+    // place per cap, with the headroom/climb/projection a 90px gauge can't
+    // carry. Guarded on pacing actually having produced them: without it (an
+    // old snapshot, a pacing failure) they fall back to gauges rather than
+    // vanishing, which is the one outcome this whole change exists to prevent.
+    const mcaps = new Set(((P.model_caps) || []).map(c => c.key));
     let cards="";
-    for(const k of limitOrder(L)){ const v=L[k]; if(v && v.utilization!=null)
+    for(const k of limitOrder(L)){ const v=L[k]; if(v && v.utilization!=null && !mcaps.has(k))
       cards += gaugeCard(k, v, W[k], k==="seven_day" ? P.weekly_day : null); }
     host.innerHTML = `<div class="grid gauges">${cards}</div>`;
+    renderModelCaps(P);
     if(quota.warning) host.innerHTML += `<div class="pill" style="color:var(--warn);margin-top:8px">${quota.warning}</div>`;
   }
 

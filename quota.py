@@ -327,8 +327,13 @@ def _scoped(raw, out):
         key = "seven_day_scoped_" + slug
         if out.get(key):
             continue
+        # `scope` is the bare name the cap applies to — "Fable" — kept beside the
+        # label because every narrow rendering of this cap wants the name alone,
+        # and three separate `label.split("·")` calls is three places to get a
+        # label without a separator wrong.
         out[key] = {"utilization": row.get("percent"),
                     "resets_at": row.get("resets_at"),
+                    "scope": name,
                     "label": "This week · {}".format(name)}
 
 

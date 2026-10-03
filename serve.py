@@ -9,6 +9,7 @@ system-tray piece. Live quota is OFF here unless CLAUDE_USAGE_QUOTA=1 is set
 Env: CLAUDE_USAGE_PORT (default 8787), CLAUDE_USAGE_QUOTA=1 to enable quota.
 """
 import os
+import tempfile
 import threading
 import time
 
@@ -18,20 +19,28 @@ from engine import UsageEngine, code_projects_dir, cowork_sessions_dir
 from server import make_server
 
 
+# Shaped like a current Max plan, not like the one this mock was written for:
+# both flat per-model keys read null there now, and the per-model cap arrives
+# as a runtime-named scoped row. A mock still carrying seven_day_opus could not
+# preview the per-model card at all — the one part of the Limits tab whose
+# layout is hardest to reason about without seeing it.
 _MOCK_QUOTA = {
     "enabled": True, "available": True,
     "limits": {
         "five_hour": {"utilization": 68, "resets_at": None},
         "seven_day": {"utilization": 41, "resets_at": None},
-        "seven_day_opus": {"utilization": 55, "resets_at": None},
-        "seven_day_sonnet": {"utilization": 12, "resets_at": None},
+        "seven_day_opus": None,
+        "seven_day_sonnet": None,
+        "seven_day_scoped_fable": {"utilization": 77, "resets_at": None,
+                                   "scope": "Fable", "label": "This week · Fable"},
     },
 }
 # Reset offsets chosen so the mock lands *over* pace on the 5-hour window
 # (2h into 5h at 68% — the budget line is at 40%), since previewing the pacing
-# UI is most of what the mock is for.
+# UI is most of what the mock is for. Fable is over its weekly line too, and far
+# enough over to be the binding cap: 77% against the week's 41%.
 _MOCK_RESET_IN = {"five_hour": 3.0 * 3600, "seven_day": 3.2 * 86400,
-                  "seven_day_opus": 3.2 * 86400, "seven_day_sonnet": 3.2 * 86400}
+                  "seven_day_scoped_fable": 3.2 * 86400}
 
 
 class State:
@@ -49,9 +58,12 @@ class State:
             now = time.time()
             for k, dt in _MOCK_RESET_IN.items():
                 m["limits"][k]["resets_at"] = _iso(now + dt)
-            # No store: the mock has no real history, so the day-level rows
-            # correctly render as "tracking from now" rather than inventing one.
-            m["pacing"] = pacing.compute(m["limits"])
+            # A throwaway store rather than none at all. Without one there is no
+            # climb rate and no day baseline, so the per-model card can only ever
+            # preview its "no reading history yet" fallback — which is the
+            # branch that needs previewing least. In memory and never saved: the
+            # mock must not write over the real history.
+            m["pacing"] = pacing.compute(m["limits"], store=_mock_store(now, m["limits"]))
             return m
         if not self.quota_enabled:
             return {"enabled": False}
@@ -83,6 +95,28 @@ class State:
         data = quota.fetch()
         if data.get("available"):
             self.history.record(data.get("limits") or {})
+
+
+def _mock_store(now, limits):
+    """A day and a half of readings that arrive at the mock's numbers.
+
+    A straight ramp from zero over 36 hours, one sample every ten minutes, all
+    stamped with the weekly generation the way the tray's updater stamps them.
+    Enough for the day baseline and for every climb box up to 24h.
+    """
+    # A path under TEMP, not the real history's: nothing here writes, but the
+    # default path would aim a future _save() at eight days of real readings.
+    store = pacing.SampleStore(path=os.path.join(
+        tempfile.gettempdir(), "ClaudeUsageMonitor", "mock-history.json"))
+    span, step = 36 * 3600.0, 600.0
+    gen = pacing._anchor(limits["seven_day"]["resets_at"])
+    store._samples = [
+        {"t": now - span + i * step,
+         "u": {k: round(v["utilization"] * (i * step) / span, 1)
+               for k, v in limits.items() if isinstance(v, dict)},
+         "w": gen}
+        for i in range(int(span / step) + 1)]
+    return store
 
 
 def _iso(epoch):

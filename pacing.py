@@ -72,6 +72,15 @@ _MIN_SAMPLE_GAP = 300.0        # re-record an unchanged reading at most this oft
 # point is 4 pts/h — a fifth of the even-spend rate — which is fine resolution.
 GAUGE_WINDOWS = (900.0, 1800.0)
 
+# The same idea for a *weekly* bar, which climbs two orders of magnitude slower:
+# an even week spends 100/168 = 0.6 points an hour, so a fifteen-minute box can
+# only ever read zero or — off one rounding step — 4 pts/h, six times pace from
+# a single point. These boxes are sized to the window they measure. An hour is
+# the "right now" reading (one point there is already 1.7x pace), six hours
+# smooths a working session, and a day is wide enough to project the rest of the
+# week from without a lunch break reading as a slowdown.
+MODEL_GAUGE_WINDOWS = (3600.0, 6 * 3600.0, 24 * 3600.0)
+
 # A weekly bar cannot fall inside its own window — it only drops at the reset,
 # which starts a new generation. So a drop with the generation unchanged means
 # the *denominator* moved, not the numerator: a plan change (Max 5x -> 20x)
@@ -98,6 +107,20 @@ def window_hours(key):
     if key == "seven_day" or key.startswith("seven_day_"):
         return 168.0
     return None
+
+
+def scope_name(key, lim):
+    """The bare name a cap applies to — "Fable", "all models" — for a card that
+    cannot afford the whole "This week · Fable" label.
+
+    Prefers the `scope` quota._scoped now carries, and falls back to the tail of
+    the label so the two flat per-model keys (and anything a future shape names
+    only in its label) still answer.
+    """
+    if isinstance(lim, dict) and lim.get("scope"):
+        return lim["scope"]
+    label = (isinstance(lim, dict) and lim.get("label")) or LABELS.get(key) or key
+    return label.split("·")[-1].strip()
 
 
 def _anchor(iso):
@@ -349,6 +372,7 @@ def _window(key, lim, now, ceiling):
         # A scoped cap carries its own label from quota._scoped — the endpoint
         # names the model at runtime, so there is no static entry to look up.
         "label": lim.get("label") or LABELS.get(key, key),
+        "scope": scope_name(key, lim),
         "window_hours": hours,
         "utilization": util,
         "start_epoch": start_e,
@@ -364,8 +388,20 @@ def _window(key, lim, now, ceiling):
     }
 
 
-def _weekly_day(w, store, now, ceiling):
-    """Day-level view of the weekly window, phased off its own reset anchor."""
+def _weekly_day(w, store, now, ceiling, generation=None):
+    """Day-level view of a weekly window, phased off its own reset anchor.
+
+    Keyed off `w["key"]` rather than the literal "seven_day" so a per-model cap
+    gets the same day view — which is what makes one legible: a cap at 79% of
+    its week says little until you know how much of that went today.
+
+    `generation` is the marker the store stamped its samples with, which is
+    always the *all-models* week's anchor whatever key is being read back. A
+    scoped cap shares that reset today, so its own anchor would match; passing
+    the week's keeps that a fact rather than a coincidence, and a scoped cap
+    that ever rolled on its own schedule degrades to "no history yet" instead of
+    silently subtracting the wrong baseline.
+    """
     span = w["window_hours"] * 3600.0
     # Clamped at both ends. The 6 stops a leap-second-ish overshoot inventing an
     # eighth day; the 0 covers `now` landing before the window start, which a
@@ -385,7 +421,7 @@ def _weekly_day(w, store, now, ceiling):
         used, baseline_e, exact = w["utilization"], day_start, True
     elif store is not None:
         base_util, baseline_e, exact = store.baseline(
-            "seven_day", day_start, w["reset_epoch"])
+            w["key"], day_start, generation if generation is not None else w["reset_epoch"])
         if base_util is not None:
             if base_util > w["utilization"]:
                 # Baseline above today's reading: history written before a plan
@@ -413,6 +449,84 @@ def _weekly_day(w, store, now, ceiling):
         "budget_at_day_end": ceiling * (idx + 1) / 7.0,
         "days_left": (w["reset_epoch"] - now) / 86400.0,
     }
+
+
+def model_caps(windows, store=None, now=None, ceiling=DEFAULT_CEILING):
+    """Every per-model weekly cap, worked up into its own small dashboard.
+
+    A scoped cap is a *second, tighter* budget living inside the weekly one, and
+    the two run down at different speeds: reading 79% beside the week's 61% is
+    only half the story, because what you plan around is which of them runs out
+    first and how long that takes. So each entry carries, on top of the bar:
+
+      * `headroom` vs `week_headroom` — points left here against points left in
+        the week. `binds` is headroom being the smaller of the two, `binds_by`
+        the gap: 21 against 39 means this cap stops you 18 points early, and
+        those 18 are still yours to spend on any other model.
+      * `day` — the same day-of-seven view the all-models week gets.
+      * `climb` — how fast this bar is actually rising (MODEL_GAUGE_WINDOWS),
+        and from the widest box with readings in it, where that rate lands:
+        `projected_at_reset`, and `full_at_epoch` if it gets there first.
+
+    The projection is a straight-line read of the recent past, which is exactly
+    what the `resume_at` model refuses to do for the wait — deliberately. A wait
+    has to be a fixed instant you can count down to; "will I make it to Tuesday"
+    is a different question, has no honest answer that isn't a rate, and is
+    wrong in a way you can see (the reset time is right there beside it).
+
+    Ordered tightest-first, so the cap most likely to stop you renders first.
+    """
+    now = now or time.time()
+    week = (windows or {}).get("seven_day")
+    week_span = WINDOW_HOURS["seven_day"]
+    week_headroom = None if week is None else max(0.0, ceiling - week["utilization"])
+    generation = week["reset_epoch"] if week else None
+
+    out = []
+    for key, w in sorted((windows or {}).items()):
+        if key == "seven_day" or w.get("window_hours") != week_span:
+            continue
+        headroom = max(0.0, ceiling - w["utilization"])
+        climb = (gauge_velocity(store, key, now, MODEL_GAUGE_WINDOWS, ceiling)
+                 if store is not None else None)
+        # The widest box that actually held readings: a day if the history
+        # reaches back a day, an hour on a fresh install. `samples` is readings
+        # in the box, not points gained, so an idle box is a real rate of zero
+        # and projects a flat line — which is the truth about an idle day.
+        basis = next((b for b in reversed(climb or []) if b["samples"] > 0), None)
+        pph = basis["points_per_hour"] if basis else None
+        projected = (None if pph is None else
+                     min(ceiling, w["utilization"] + pph * w["remaining_hours"]))
+        full_at = (now + headroom / pph * 3600.0) if (pph and headroom > 0) else None
+        out.append({
+            "key": key,
+            "label": w["label"],
+            "scope": w.get("scope") or key,
+            "utilization": w["utilization"],
+            "state": w["state"],
+            "delta": w["delta"],
+            "ideal_utilization": w["ideal_utilization"],
+            "reset_epoch": w["reset_epoch"],
+            "remaining_hours": w["remaining_hours"],
+            "wait_seconds": w["wait_seconds"],
+            "resume_at_epoch": w["resume_at_epoch"],
+            "slack_seconds": w["slack_seconds"],
+            "headroom": headroom,
+            "week_headroom": week_headroom,
+            "binds": None if week_headroom is None else headroom < week_headroom,
+            "binds_by": None if week_headroom is None else week_headroom - headroom,
+            "day": _weekly_day(w, store, now, ceiling, generation),
+            "climb": climb,
+            "climb_seconds": basis["window_seconds"] if basis else None,
+            "climb_points_per_hour": pph,
+            "projected_at_reset": projected,
+            # Only a rate that runs out *before the window does* is a deadline;
+            # past the reset it is an arithmetic curiosity, and printing it
+            # beside a later rollover reads as a warning about nothing.
+            "full_at_epoch": full_at if (full_at and full_at < w["reset_epoch"]) else None,
+        })
+    out.sort(key=lambda c: c["headroom"])
+    return out
 
 
 def compute(limits, now=None, store=None, ceiling=DEFAULT_CEILING):
@@ -455,6 +569,9 @@ def compute(limits, now=None, store=None, ceiling=DEFAULT_CEILING):
         # tests), a list of boxes with `samples: 0` while the history is empty.
         "gauge_rate": gauge_velocity(store, "five_hour", now, ceiling=ceiling)
                       if store is not None else None,
+        # The per-model weekly caps, each with the headroom/day/climb reading a
+        # bare percentage can't give. Empty on a plan that scopes nothing.
+        "model_caps": model_caps(windows, store, now, ceiling),
     }
     out["headline"] = headline(out)
     return out
