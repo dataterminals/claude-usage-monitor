@@ -48,8 +48,9 @@ sessions.
 **Tray icon:** your highest utilization % (green → amber → red). Tooltip shows the
 5h and weekly %, reset time, and the pacing line (*"Ahead of pace — resume in
 1h 23m"*). Menu: **Open dashboard** (the native window), the same limits, today's
-allowance, pacing, cost totals, a Live-quota toggle, an *Auto-refresh token*
-toggle, an *Attempt token refresh* action, refresh, and quit.
+allowance, pacing, cost totals, a *Borderless window* toggle, a Live-quota
+toggle, an *Auto-refresh token* toggle, an *Attempt token refresh* action,
+refresh, and quit.
 
 **The window:** a real desktop window (Edge WebView2, already on Windows) — tall
 and narrow by default, dark-themed, resizable so you can size it into a corner. It
@@ -146,12 +147,14 @@ dropping the ledger to save 90px of scrolling is a bad trade at full size.
 
 The tray has **Dock left (narrow strip)** and **Restore window size**. Docking
 snaps the window to the left edge of whichever monitor it is currently on — not
-always the primary — at 110px wide and the full height of that monitor's *work
+always the primary — at a *visible* 136px wide (`_DOCK_W`, which is the width
+you can see, not the window rect) and the full height of that monitor's *work
 area*, so its foot stops at the taskbar rather than hiding behind it. Restore
 puts back the geometry from before the dock, or 480x900 if it never had one.
 
-Both items disable themselves when pywebview is unavailable and the dashboard is
-falling back to a browser tab, where there is no window geometry to set.
+Those two and **Borderless window** all disable themselves when pywebview is
+unavailable and the dashboard is falling back to a browser tab, where there is
+no window frame or geometry to set.
 
 ### The rollover time
 
@@ -325,15 +328,62 @@ invisible to the panel. Check the root with `python test_cowork.py` and the
 climb with `python test_pacing.py`.
 
 `_MIN` in `window.py` is `72 x 240`, deliberately below anything the full layout
-tolerates so that hand-dragging is governed by the CSS tiers. It is not the real
-floor, though: **Windows will not shrink a captioned, resizable window below
-about 136px wide** — the caption buttons set that limit, and a narrower
-`resize()` is silently clamped up to it (measured: `resize(110, 800)` returns
-136, while `resize(400, 600)` is exact, so it is a width clamp, not DPI).
+tolerates so that hand-dragging is governed by the CSS tiers. Whether it is the
+real floor depends on the frame. Captioned, **Windows will not shrink a
+resizable window below about 136px wide** — the caption buttons set that limit,
+and a narrower `resize()` is silently clamped up to it (measured:
+`resize(110, 800)` returns 136, while `resize(400, 600)` is exact, so it is a
+width clamp, not DPI). Borderless, `_MIN` is the floor and means it: the same
+`resize(96, 800)` lands exactly.
 
-136px still lands inside the `< 140px` edge tier, so the densest layout is
-reachable in the real window. The tiers below it only come into play if the
-window ever goes frameless, or in a browser tab, where nothing clamps.
+### Borderless
+
+**Tray → Borderless window**, on by default. This window's home is a strip
+against a screen edge, where the caption is ~30px of title bar for a title you
+already know and three buttons you reach for once a week.
+
+It is *not* pywebview's `frameless=True`, which sets `FormBorderStyle = None`
+and takes the sizing border with the caption: you would get the space back and
+lose the ability to drag the strip's width, the one dimension that matters here.
+`set_borderless()` drops `WS_CAPTION` by hand and keeps `WS_THICKFRAME`, so the
+edges still resize and only the title, icon and window buttons go.
+
+What follows from dropping `WS_CAPTION`:
+
+- **The width floor goes with it.** `SM_CXMINTRACK` is the caption buttons'
+  doing and is not lowerable — forcing `WM_GETMINMAXINFO`'s `ptMinTrackSize` to
+  `(1, 1)` still came back 136. Borderless, the sub-140px tiers stop being
+  theoretical: measured on the real window, `resize(96, 800)` renders at a 82px
+  CSS viewport.
+- **The dock stays flush.** The invisible border measures 6px rather than 7,
+  which `_frame_insets` reads per window, so `dock_left` needs no arithmetic of
+  its own: window rect `(-6, 0, 148, 1038)` puts the visible strip at exactly
+  `(0, 0)-(136, 1032)` against that monitor's `rcWork`.
+- **Dragging moves to the header**, via pywebview's `.pywebview-drag-region`.
+  The class is queried live on every mousedown, so toggling it at runtime is
+  enough, and a framed window never gets it — a header you can accidentally
+  drag a window by is a worse header.
+- **The close moves into the page.** The caption's X goes with the caption, and
+  the tray only ever *shows* the window, so the header grows a `×` that calls
+  `DashboardWindow._Api.hide()`. That is the whole js_api on purpose: a page
+  served over loopback should not be able to move, resize or quit the app.
+- **Turning it back on widens to the floor.** Restoring the caption does not
+  retroactively re-apply `SM_CXMINTRACK`, so a window narrowed past it keeps a
+  width Windows would now refuse to set — and a caption squeezed into 72px has
+  no room for the close button that is the reason to want one back.
+
+The style is applied from `Form.Shown`, not from `run()`'s bootstrap: the window
+is deliberately created hidden, WinForms gives a hidden form no handle to talk
+to, and the write was silently dropped while the page had already been told it
+had gone borderless. The page is told the *measured* state rather than the
+preference, so that gap can't reopen. WinForms does not re-assert the caption
+across hide/show/move (measured), and `open()` re-asserts it anyway.
+
+The choice is the one thing the tray remembers across restarts — see
+`settings.py`. Everything else it owns (Live quota, Auto-refresh token) is a
+runtime choice whose default is what you want on a fresh start; a window frame
+is a property of where you keep the window, and re-picking it every launch would
+make the setting worse than not having one.
 
 ## Pacing
 
@@ -430,10 +480,12 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 | `engine.py` | Incremental transcript parser + aggregation over both roots (Claude Code's and Cowork's). Dedupes on `message.id`+`requestId` (like `ccusage`). Names Cowork sessions from their sidecar titles. Persists offsets/records to `%LOCALAPPDATA%\ClaudeUsageMonitor` so launch is instant instead of a full re-parse. |
 | `quota.py` | The `/usage` reader + token refresh (`platform.claude.com/v1/oauth/token`). Caches on the credentials file's mtime as well as a TTL, and backs off refused refreshes. Read-only unless `allow_refresh=True`. |
 | `pacing.py` | The catch-up model above: window phase, `resume_at`, day allowances, the on-disk reading history, the gauge climb read from it, and `model_caps` — the per-model weekly caps worked up into the card described above. |
+| `settings.py` | The handful of tray toggles that outlive a restart (today: `borderless`). One flat JSON file beside the cache; every failure degrades to the defaults. |
 | `test_pacing.py` | Self-check for that math (`python test_pacing.py`). No framework, no dependencies. |
 | `test_quota.py` | Self-check for the token-refresh backoff (`python test_quota.py`). Offline: scripted endpoints, a fake clock and a throwaway credentials file. |
 | `test_health.py` | Self-check for what `/health` reports (`python test_health.py`). Offline: a temp transcript dir, a temp cache file and an ephemeral port. |
 | `test_cowork.py` | Self-check for the second transcript root (`python test_cowork.py`): found through the dot-directory, a session's `audit.jsonl` and `outputs` ignored, sessions named by their sidecar title and retitled when it changes, a cache from before the root still loads. Offline. |
+| `test_settings.py` | Self-check for the persisted toggles (`python test_settings.py`): defaults without a file, a stored value winning, a save carrying the keys it wasn't handed, four kinds of bad file degrading to the defaults, and an unwritable path costing a toggle rather than a launch. Offline, in a temp dir. |
 | `test_velocity.py` | Self-check for the tachometers' rates (`python test_velocity.py`): what one request reads as, when it drops out, a full box, where the peak sits, that the same burst reads lower the wider the box, and that every box reads zero during an idle hour while the block average sits. Offline. |
 | `pricing.py` / `pricing.json` | Per-model notional cost rates. Edit the JSON; reloaded on restart. |
 | `server.py` + `dashboard.html` | Local dashboard on `127.0.0.1` (`/`, `/api/usage`, `/api/quota`, `/health`). Binds a fixed port ladder (8787–8790) so the URL is stable. In the tray app, `/health` also reports the updater's last swallowed error and the parse cache's path, warm-start result and last save, as the app itself sees them. |
@@ -448,9 +500,10 @@ Until connected, the self-tracked burn panel still gives you a local read on usa
 100% local except the opt-in quota call to Anthropic's own API with your own
 token. No telemetry. The dashboard binds to loopback only.
 
-Two files are written under `%LOCALAPPDATA%\ClaudeUsageMonitor`: the reading
+Three files are written under `%LOCALAPPDATA%\ClaudeUsageMonitor`: the reading
 history that pacing needs (`quota-history.json` — utilization percentages and
-reset times, no content) and the parser cache (`engine-cache-*.json` — the
+reset times, no content), the parser cache (`engine-cache-*.json` — the
 per-message token counts, model and project names, and Cowork session titles
-already in your transcripts and their sidecars, no prompts or replies). Delete
-either at any time; both are rebuilt.
+already in your transcripts and their sidecars, no prompts or replies), and the
+tray's persisted toggles (`settings.json` — one boolean). Delete any of them at
+any time; all three are rebuilt.

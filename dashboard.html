@@ -27,6 +27,20 @@
     @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(67,201,139,.5)} 70%{box-shadow:0 0 0 7px rgba(67,201,139,0)} 100%{box-shadow:0 0 0 0 rgba(67,201,139,0)} }
   }
 
+  /* Borderless: window.py sets data-chrome on <html> and puts the drag class
+     on the header, because nothing in the page can see its own frame. The
+     caption's close goes with the caption, so the header grows the one
+     replacement — and only then, since a framed window already has an X. */
+  .hideBtn { display:none; }
+  [data-chrome="none"] header { cursor:default; -webkit-user-select:none; }
+  [data-chrome="none"] .hideBtn { display:block; margin-left:6px; flex:none;
+    background:none; border:0; color:var(--faint); font:inherit; font-size:15px;
+    line-height:1; padding:2px 5px; border-radius:6px; cursor:pointer; }
+  [data-chrome="none"] .hideBtn:hover { background:var(--panel2); color:var(--ink); }
+  /* At edge width the status line is a dot and a clock that has itself gone;
+     the × keeps its place by moving onto the dot's row rather than wrapping. */
+  @media (max-width:139px){ [data-chrome="none"] .hideBtn { padding:1px 3px; font-size:13px; } }
+
   .tabs { display:flex; gap:6px; margin:16px 0 4px; }
   .tab { background:none; border:1px solid var(--line); color:var(--dim); padding:7px 16px; border-radius:9px;
     font:inherit; font-size:13px; cursor:pointer; }
@@ -336,6 +350,7 @@
     <h1>Claude&nbsp;Usage</h1>
     <span class="sub" id="models"></span>
     <span class="status"><span class="dot" id="dot"></span><span id="clock">connecting…</span><span class="roll" id="rollover"></span></span>
+    <button class="hideBtn" id="hideBtn" title="Hide — reopen from the tray">×</button>
   </header>
 
   <div class="tabs">
@@ -402,6 +417,13 @@ function color(u){ return u>=90?"var(--bad)":u>=70?"var(--warn)":"var(--good)"; 
 function modelColor(m){ if(m.includes("opus")) return "var(--opus)"; if(m.includes("sonnet")) return "var(--sonnet)";
   if(m.includes("fable")||m.includes("mythos")) return "var(--fable)"; if(m.includes("haiku")) return "var(--haiku)"; return "var(--other)"; }
 function shortModel(m){ return m.replace("claude-","").replace(/-/g," "); }
+
+// The window's own close, for when there isn't one. pywebview exposes
+// DashboardWindow._Api; in a browser tab there is no `pywebview` at all, and
+// the button is hidden there anyway because nothing ever sets data-chrome.
+el("hideBtn").onclick = () => {
+  try { window.pywebview.api.hide(); } catch(e) {}
+};
 
 // tabs
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {

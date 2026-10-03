@@ -44,14 +44,15 @@ _WIDTH = 480
 _HEIGHT = 900
 _BG = "#0e1014"          # matches dashboard --bg so there's no white flash
 # Deliberately below anything the full layout tolerates, so hand-dragging is
-# governed by the CSS tiers rather than by this tuple. Note it is NOT the real
-# floor: Windows refuses to shrink a captioned, resizable window past roughly
-# 136px wide (the caption buttons set that limit), and a resize() asking for
-# less is silently clamped up to it. Measured, not assumed — resize(110, 800)
-# comes back as 136 while resize(400, 600) is exact, so it is a width clamp and
-# not DPI scaling. The clamp has a name: SM_CXMINTRACK, measured at 136 here,
-# and it is not lowerable — forcing WM_GETMINMAXINFO's ptMinTrackSize to (1, 1)
-# still came back as 136. Only dropping WS_CAPTION moves it, which we won't.
+# governed by the CSS tiers rather than by this tuple. Whether it is the real
+# floor depends on the frame. Captioned, Windows refuses to shrink a resizable
+# window past roughly 136px wide and silently clamps a resize() asking for
+# less — measured, not assumed: resize(110, 800) comes back as 136 while
+# resize(400, 600) is exact, so it is a width clamp and not DPI scaling. The
+# clamp has a name, SM_CXMINTRACK, it is the caption buttons' doing, and it is
+# not lowerable: forcing WM_GETMINMAXINFO's ptMinTrackSize to (1, 1) still came
+# back 136. Dropping WS_CAPTION is the only thing that moves it, which is what
+# set_borderless does — borderless, this tuple is the floor and means it.
 _MIN = (72, 240)
 
 # Docked-strip width — the width you can SEE, not the window rect. Those differ
@@ -400,6 +401,103 @@ def _clamp_to_screen(win, x, y, w, h):
     return (vx - bl, vy - bt, vw + bl + br, vh + bt + bb)
 
 
+# ---- borderless ------------------------------------------------------------
+# Not pywebview's `frameless=True`. That sets FormBorderStyle = None, which
+# takes the caption AND the sizing border with it: you get the space back and
+# lose the ability to drag the strip's width, which is the one dimension that
+# matters here. Dropping WS_CAPTION by hand and keeping WS_THICKFRAME gives up
+# only what was asked for — the title, the icon, and the minimise/maximise/close
+# buttons — and the edges still resize.
+#
+# It also lifts the width floor the module docstring warns about. Measured on a
+# throwaway window here: captioned, resize(110, 500) comes back 136 wide
+# (SM_CXMINTRACK, which is the caption buttons' doing and is not lowerable);
+# borderless, the same call is exact, as is resize(72, 400). So the dashboard's
+# sub-140px tiers stop being theoretical. WinForms does not re-assert the style
+# across hide/show/move, and the invisible border it leaves measures 6px rather
+# than 7 — which _frame_insets reads per window, so dock_left stays flush with
+# no arithmetic of its own.
+_GWL_STYLE = -16
+_WS_CAPTION = 0x00C00000
+_WS_THICKFRAME = 0x00040000
+_SM_CXMINTRACK = 34
+_SWP_FRAMECHANGED = 0x0020
+
+
+def _get_style(hwnd):
+    """A window's GWL_STYLE as an unsigned 32-bit int, or None."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, ValueError):        # pragma: no cover - non-Windows
+        return None
+    user32 = _user32()
+    if user32 is None:
+        return None
+    try:
+        user32.GetWindowLongW.restype = ctypes.c_long
+        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        return user32.GetWindowLongW(wintypes.HWND(hwnd), _GWL_STYLE) & 0xFFFFFFFF
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _set_style(hwnd, style):
+    """Write GWL_STYLE and tell the frame to redraw. True if it landed.
+
+    SetWindowLongW takes a signed long while _get_style hands back an unsigned
+    32-bit value, so a style carrying WS_POPUP (0x80000000) has to come back
+    across zero or ctypes refuses it. SWP_FRAMECHANGED is the part people
+    forget: without it the non-client area is never recalculated and the caption
+    stays painted until something else happens to resize the window.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, ValueError):        # pragma: no cover - non-Windows
+        return False
+    user32 = _user32()
+    if user32 is None:
+        return False
+    try:
+        signed = style - (1 << 32) if style & 0x80000000 else style
+        user32.SetWindowLongW.restype = ctypes.c_long
+        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user32.SetWindowLongW(wintypes.HWND(hwnd), _GWL_STYLE, ctypes.c_long(signed))
+        user32.SetWindowPos.restype = wintypes.BOOL
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0004, 0x0010
+        return bool(user32.SetWindowPos(wintypes.HWND(hwnd), None, 0, 0, 0, 0,
+                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                                        | SWP_NOACTIVATE | _SWP_FRAMECHANGED))
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _min_track_width():
+    """SM_CXMINTRACK — the width a *captioned* window cannot go below."""
+    user32 = _user32()
+    if user32 is None:
+        return None
+    try:
+        return int(user32.GetSystemMetrics(_SM_CXMINTRACK)) or None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+# Told to the page rather than inferred by it: there is no CSS or JS that can
+# see a window's frame. The dashboard uses it to offer the close the caption no
+# longer provides, and to mark the header as pywebview's drag region — which is
+# queried live on every mousedown, so toggling the class at runtime is enough.
+_CHROME_JS = """(function(b){
+  document.documentElement.setAttribute('data-chrome', b ? 'none' : 'frame');
+  var h = document.querySelector('header');
+  if (h) h.classList.toggle('pywebview-drag-region', b);
+})(%s)"""
+
+
 def _nudge_to_front(win, restore=True):
     """Best-effort bring-to-front. Never raises. Note pywebview's `on_top` is a
     *property* (a bool), not a method.
@@ -433,9 +531,28 @@ class DashboardWindow:
         win.shutdown()  # let the window close for real, ending the loop (Quit)
     """
 
-    def __init__(self, url, icon_path=None):
+    class _Api:
+        """The one thing the page can ask of the window.
+
+        Borderless takes the caption's close button with it, and the tray menu
+        only ever *shows* the window — so without this, the dashboard would have
+        no way to get out of its own sight. Deliberately the whole API: a page
+        served over loopback should not be able to move, resize or quit the app.
+        """
+
+        def __init__(self, owner):
+            self._owner = owner
+
+        def hide(self):
+            try:
+                self._owner._window.hide()
+            except Exception:
+                pass
+
+    def __init__(self, url, icon_path=None, borderless=False):
         self.url = url
         self.icon_path = icon_path
+        self.borderless = bool(borderless)
         self._window = None
         self._started = threading.Event()
         self._quitting = False
@@ -461,9 +578,89 @@ class DashboardWindow:
             width=_WIDTH, height=_HEIGHT, min_size=_MIN,
             background_color=_BG, hidden=hidden, focus=not hidden,
             resizable=True, text_select=False, confirm_close=False,
+            js_api=self._Api(self),
         )
         win.events.closing += self._on_closing
+        # Not from run()'s bootstrap: a window created hidden has no handle to
+        # restyle yet. Form.Shown is the first moment it does.
+        win.events.shown += self._on_shown
+        # A reload drops anything injected into the document, and this page
+        # reloads whenever the dashboard is edited — so the flag is re-told on
+        # every load rather than set once.
+        win.events.loaded += self._tell_page_chrome
         return win
+
+    # ---- borderless ----
+    def _has_caption(self):
+        """Whether the window is wearing a caption right now, or None if the
+        question can't be answered — no window yet, no handle yet, no ctypes."""
+        win = self._window
+        hwnd = _hwnd(win) if win is not None else None
+        style = _get_style(hwnd) if hwnd else None
+        return None if style is None else bool(style & _WS_CAPTION)
+
+    def _tell_page_chrome(self):
+        """Hand the page the one fact about its own frame that it can't see.
+
+        The *measured* fact, not the preference: between asking for borderless
+        and the style actually landing there is a window with a caption, and a
+        page told otherwise would offer its own close button beside the real
+        one and mark a header as draggable that already has a title bar.
+        """
+        caption = self._has_caption()
+        on = self.borderless if caption is None else not caption
+        try:
+            self._window.evaluate_js(_CHROME_JS % ("true" if on else "false"))
+        except Exception:
+            pass        # the page just keeps the frame-ful layout
+
+    def set_borderless(self, on):
+        """Add or remove the window's caption. Returns the state it ended in.
+
+        `self.borderless` is the *preference* and is set either way: a window
+        that has not been shown yet has no handle to restyle, so the request is
+        remembered and `_on_shown` applies it the moment there is one. The
+        return value is what the window is actually wearing when that can be
+        measured, so a caller (the tray's tick) can't show a state the window
+        never reached.
+
+        The style is written on every call rather than only on a change: the
+        caption is the kind of thing another layer can put back — a WinForms
+        handle recreation, a future pywebview — and re-asserting it costs one
+        SetWindowPos with nothing moving.
+        """
+        self.borderless = on = bool(on)
+        win = self._window
+        hwnd = _hwnd(win) if win is not None else None
+        style = _get_style(hwnd) if hwnd else None
+        if style is not None:
+            want = ((style & ~_WS_CAPTION) if on else (style | _WS_CAPTION)) | _WS_THICKFRAME
+            if _set_style(hwnd, want) and not on:
+                # Putting the caption back does not retroactively re-apply
+                # SM_CXMINTRACK, so a window narrowed past it while borderless
+                # keeps a width Windows would now refuse to set — and a caption
+                # squeezed into 72px has no room for the close button that is
+                # the whole reason to want one back. Widen to the floor, in
+                # place, and leave every other bit of geometry alone.
+                floor = _min_track_width()
+                try:
+                    if floor and win.width < floor:
+                        _place(win, win.x, win.y, floor, win.height)
+                except Exception:
+                    pass
+        self._tell_page_chrome()
+        caption = self._has_caption()
+        return self.borderless if caption is None else not caption
+
+    def _on_shown(self):
+        """First show: the form finally has a handle, so the style can land.
+
+        This is the hook that makes a stored preference work at all. Applying it
+        from the bootstrap callback cannot: the window is deliberately created
+        hidden, WinForms gives a hidden form no handle to talk to, and the write
+        was silently dropped while the page was told it had gone borderless.
+        """
+        self.set_borderless(self.borderless)
 
     # ---- lifecycle ----
     def run(self, on_start=None):
@@ -496,6 +693,10 @@ class DashboardWindow:
             return
         try:
             win.show()
+            # Cheap, idempotent and self-healing: Form.Shown fires once, so this
+            # is what re-asserts the frame after anything that might have put a
+            # caption back between one opening and the next.
+            self.set_borderless(self.borderless)
             _nudge_to_front(win)
         except Exception:
             pass

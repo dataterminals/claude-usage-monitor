@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import pacing
 import quota
+import settings
 import window as win_mod
 from engine import UsageEngine, code_projects_dir, cowork_sessions_dir
 from server import make_server
@@ -146,6 +147,8 @@ class App:
         self.pace = {}
         self.quota_enabled = True
         self.auto_refresh = True
+        # The one toggle that outlives the process — see settings.py.
+        self.borderless = settings.load()["borderless"]
         self.url = ""
         self.icon = None
         self.window = None          # DashboardWindow, when pywebview is present
@@ -346,6 +349,15 @@ class App:
         if self.window is not None:
             self.window.restore_size()
 
+    def toggle_borderless(self, icon, item):
+        # Track what the window actually ended up as, not what was asked for:
+        # on a machine where the style write fails the menu would otherwise
+        # show a tick against a caption that is still there.
+        want = not self.borderless
+        self.borderless = self.window.set_borderless(want) if self.window is not None else want
+        settings.save({"borderless": self.borderless})
+        self._dirty.set()
+
     def toggle_quota(self, icon, item):
         self.quota_enabled = not self.quota_enabled
         self._dirty.set()
@@ -465,8 +477,12 @@ class App:
             self.pace = {}   # pacing is advisory; never break the loop over it
 
     def _menu_signature(self):
+        # The three booleans are here for their checkmarks, not their labels:
+        # pystray only re-reads a `checked=` callable when the menu is rebuilt,
+        # so a toggle left out of this tuple ticks one refresh late or not at all.
         return (self.lbl_5h(), self.lbl_week(), self.lbl_day(), self.lbl_pace(),
-                self.lbl_today(), self.lbl_all(), self.quota_enabled, self.auto_refresh)
+                self.lbl_today(), self.lbl_all(),
+                self.quota_enabled, self.auto_refresh, self.borderless)
 
     def _update_menu(self):
         """Rebuild the popup only when a label actually reads differently.
@@ -568,6 +584,9 @@ def build_menu(app):
         pystray.MenuItem("Open dashboard", app.open_dashboard, default=True),
         pystray.MenuItem("Dock left (narrow strip)", app.dock_left,
                          enabled=lambda item: app.window is not None),
+        pystray.MenuItem("Borderless window", app.toggle_borderless,
+                         checked=lambda item: app.borderless,
+                         enabled=lambda item: app.window is not None),
         pystray.MenuItem("Restore window size", app.restore_window,
                          enabled=lambda item: app.window is not None),
         pystray.Menu.SEPARATOR,
@@ -630,7 +649,8 @@ def main():
         # background updater once its GUI loop is live, so nothing contends for
         # the main thread. The window is created hidden — "Open dashboard" shows
         # it — so nothing pops up unbidden.
-        app.window = win_mod.DashboardWindow(app.url, icon_path)
+        app.window = win_mod.DashboardWindow(app.url, icon_path,
+                                             borderless=app.borderless)
         try:
             app.window.run(on_start=lambda: start_tray_and_updater(detached=True))
         except Exception:
